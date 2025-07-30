@@ -11,6 +11,67 @@ from src.services.auth import get_valid_access_token, refresh_access_token
 
 logger = logging.getLogger(__name__)
 
+# Configuration for organization metadata API calls
+SUPABASE_ANON_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL", "https://auth.propzing.com")
+TOOLS_EDGE_FUNCTION_URL = os.getenv("NEXT_PUBLIC_TOOLS_EDGE_FUNCTION_URL", 
+                                   "https://auth.propzing.com/functions/v1/whatsappagent_tools")
+
+async def fetch_org_metadata_internal(user_number: str, whatsapp_business_account: str) -> Dict[str, Any]:
+    """
+    Fetch organization metadata exactly like the reference implementation.
+    This fetches org details using the user number and WhatsApp business account.
+    """
+    logger.info(f"[fetch_org_metadata_internal] Fetching metadata for user: {user_number}, whatsapp_business_account: {whatsapp_business_account}")
+    
+    if not SUPABASE_ANON_KEY:
+        logger.error("[fetch_org_metadata_internal] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY")
+        return {"error": "Server configuration error - missing API key"}
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        # Prepare API payload with required parameters
+        payload = {
+            "action": "fetchOrgMetadata",
+            "user_number": user_number,
+            "whatsapp_business_account": whatsapp_business_account,
+            "session_id": f"{user_number}_{whatsapp_business_account}",
+            "chatbot_id": "testdanube"  # Default test orgcode
+        }
+        
+        logger.info(f"[fetch_org_metadata_internal] API payload: {payload}")
+        
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                TOOLS_EDGE_FUNCTION_URL,
+                json=payload,
+                headers=headers
+            )
+            
+            logger.info(f"[fetch_org_metadata_internal] API response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"[fetch_org_metadata_internal] API response data: {data}")
+                return data
+            else:
+                error_msg = f"API request failed with status {response.status_code}: {response.text}"
+                logger.error(f"[fetch_org_metadata_internal] {error_msg}")
+                return {"error": error_msg}
+                
+    except httpx.TimeoutException:
+        error_msg = "API request timed out"
+        logger.error(f"[fetch_org_metadata_internal] {error_msg}")
+        return {"error": error_msg}
+    except Exception as e:
+        error_msg = f"Error fetching metadata: {str(e)}"
+        logger.error(f"[fetch_org_metadata_internal] {error_msg}")
+        return {"error": error_msg}
+
 # 🚨 FIX: Simple timestamp-based deduplication
 processed_messages: Dict[str, float] = {}  # message_id -> timestamp
 latest_message_timestamp: float = 0  # Track the latest message timestamp we've seen

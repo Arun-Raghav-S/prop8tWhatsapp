@@ -5,6 +5,7 @@ Pub/Sub based message processor with AiSensy integration
 
 import os
 import json
+import base64
 import asyncio
 import logging
 from typing import Dict, Any, Optional
@@ -73,112 +74,198 @@ async def health_check():
         "pubsub": "listening" if pubsub_processor else "not_started"
     }
 
-async def process_webhook_message(webhook_data: Dict[str, Any]) -> None:
-    """
-    Process WhatsApp webhook message received from Pub/Sub
-    
-    This function preserves all existing agent logic and integrates with AiSensy
-    """
+@app.post("/")
+async def process_message(request: Request):
+    """Process messages from Pub/Sub (main processing endpoint)"""
     try:
-        logger.info(f"🔄 [PROCESSOR] Processing webhook message")
-        
-        # Extract business account from webhook
-        business_account = get_business_account_from_webhook(webhook_data)
-        logger.info(f"🏢 [PROCESSOR] Business account: {business_account}")
-        
-        # Extract individual messages from webhook
-        messages = extract_whatsapp_messages(webhook_data)
-        
-        if not messages:
-            logger.info("📭 [PROCESSOR] No messages to process")
-            return
-        
-        logger.info(f"📨 [PROCESSOR] Processing {len(messages)} messages")
-        
-        # Process each message
-        for message_data in messages:
-            await process_single_message(message_data, business_account)
-            
-    except Exception as e:
-        logger.error(f"❌ [PROCESSOR] Error processing webhook message: {e}")
-        raise
+        # 1. Get the Pub/Sub message envelope
+        envelope = await request.json()
+        if not envelope or "message" not in envelope:
+            logger.error("Invalid Pub/Sub message format")
+            return {"error": "Bad Request"}, 400
 
-async def process_single_message(message_data: Dict[str, Any], business_account: str = None) -> None:
+        # 2. Decode the actual data sent from the ingestion service
+        pubsub_message = envelope["message"]
+        if "data" not in pubsub_message:
+            logger.error("No data in Pub/Sub message")
+            return {"error": "Bad Request"}, 400
+            
+        # Decode the base64 data
+        try:
+            data_str = base64.b64decode(pubsub_message["data"]).decode("utf-8")
+            payload_data = json.loads(data_str)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Error decoding Pub/Sub message data: {e}")
+            return {"error": "Invalid message data"}, 400
+        
+        logger.info(f"🚀 [PUB_SUB] Processing message from Pub/Sub: {payload_data}")
+        
+        # 3. Process WhatsApp Business Account webhook (from AiSensy)
+        if payload_data.get("object") == "whatsapp_business_account":
+            entries = payload_data.get("entry", [])
+            
+            for entry in entries:
+                # Extract WhatsApp business account ID
+                whatsapp_business_account = entry.get("id")
+                if not whatsapp_business_account:
+                    logger.error("Missing WhatsApp business account ID in webhook")
+                    continue
+                
+                logger.info(f"WhatsApp Business Account ID: {whatsapp_business_account}")
+                
+                changes = entry.get("changes", [])
+                
+                for change in changes:
+                    # Check if this is a message event
+                    if change.get("field") == "messages":
+                        value = change.get("value", {})
+                        messages = value.get("messages", [])
+                        statuses = value.get("statuses", [])
+                        
+                        for message in messages:
+                            await process_single_message(message, whatsapp_business_account)
+                            
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"💥 [PUB_SUB] Error processing Pub/Sub message: {e}")
+        return {"error": "Internal Server Error"}, 500
+
+async def process_single_message(message: Dict[str, Any], whatsapp_business_account: str) -> None:
     """
-    Process a single WhatsApp message using the existing agent system
+    Process a single WhatsApp message exactly like the reference implementation
     
     Args:
-        message_data: Extracted message data
-        business_account: WhatsApp business account ID
+        message: The message data from WhatsApp webhook
+        whatsapp_business_account: WhatsApp business account ID
     """
     try:
-        # Handle status updates
-        if message_data.get("type") == "status_update":
-            logger.info("📊 [PROCESSOR] Processing status update")
-            # Status updates can be handled here if needed
-            return
-        
-        # Process regular messages
-        message = message_data.get("message", {})
-        from_number = message.get("from", "unknown")
-        message_id = message.get("id", "unknown")
+        # Handle different message types
+        message_type = message.get("type")
+        from_phone = message.get("from")
+        user_number = f"+{from_phone}" if from_phone else None
+        message_id = message.get("id")
         message_timestamp = message.get("timestamp")
-        message_text = message.get("text", {}).get("body", "")
         
-        if not message_text:
-            logger.info(f"📭 [PROCESSOR] No text content in message {message_id}")
-            return
+        # Check for duplicate/delayed messages from AiSensy
+        if message_id:
+            if is_duplicate_message(message_id, message_timestamp):
+                logger.warning(f"🚨 [DEDUP] Skipping duplicate/delayed message: {message_id}")
+                return  # Skip processing this message
         
-        logger.info(f"💬 [PROCESSOR] Processing message from {from_number}: {message_text}")
+        # Mark message as read and show typing indicator for better UX
+        if message_id and whatsapp_business_account:
+            logger.info(f"📬 [MARK_READ] Processing message ID: {message_id}")
+            logger.info(f"📬 [MARK_READ] From: {user_number}")
+            logger.info(f"📬 [MARK_READ] Type: {message_type}")
+            
+            # Mark message as read asynchronously (don't wait for response)
+            asyncio.create_task(mark_message_as_read(message_id, whatsapp_business_account))
         
-        # Check for duplicate messages
-        if is_duplicate_message(message_id, message_timestamp):
-            logger.warning(f"🚨 [PROCESSOR] Skipping duplicate message {message_id}")
-            return
+        # Handle text messages
+        if message_type == "text":
+            text_message = message.get("text", {}).get("body", "").strip()
+            
+            if not text_message:
+                logger.info(f"📭 [TEXT] Empty text message from {user_number}")
+                return
+            
+            logger.info(f"💬 [TEXT] Processing message from {user_number}: {text_message}")
+            
+            if user_number and text_message and whatsapp_business_account:
+                try:
+                    # Get or create session for this user
+                    session = session_manager.get_session(user_number)
+                    
+                    # Process through agent system
+                    agent_response = await agent_system.process_message(
+                        message=text_message, 
+                        session=session
+                    )
+                    
+                    logger.info(f"🤖 [TEXT] Agent response generated: {agent_response[:100]}...")
+                    
+                    # Send response via AiSensy
+                    success = await send_message_via_aisensy(
+                        to_phone=user_number,
+                        message=agent_response,
+                        whatsapp_business_account=whatsapp_business_account
+                    )
+                    
+                    if success:
+                        logger.info(f"✅ [TEXT] Response sent successfully to {user_number}")
+                    else:
+                        logger.error(f"❌ [TEXT] Failed to send response to {user_number}")
+                    
+                    # Update session
+                    session_manager.update_session(user_number, session)
+                    
+                except Exception as e:
+                    logger.error(f"❌ [TEXT] Agent processing error: {e}")
+                    
+                    # Send error response
+                    error_response = "Sorry, I encountered an error processing your request. Please try again."
+                    await send_message_via_aisensy(
+                        to_phone=user_number,
+                        message=error_response,
+                        whatsapp_business_account=whatsapp_business_account
+                    )
         
-        # Mark message as read (optional - can improve UX)
-        try:
-            await mark_message_as_read(message_id, business_account)
-        except Exception as e:
-            logger.warning(f"⚠️ [PROCESSOR] Failed to mark message as read: {e}")
+        # Handle button clicks (like in reference)
+        elif message_type == "button":
+            button_data = message.get("button", {})
+            button_payload = button_data.get("payload", "")
+            button_text = button_data.get("text", "")
+            
+            logger.info(f"🔘 [BUTTON] Processing button click from {user_number}: {button_text} (payload: {button_payload})")
+            
+            if user_number and whatsapp_business_account:
+                try:
+                    # Get or create session for this user
+                    session = session_manager.get_session(user_number)
+                    
+                    # Create a message based on button click
+                    button_message = f"User clicked: {button_text}"
+                    if button_payload.startswith("site_visit_"):
+                        button_message = "I want to schedule a visit for this property"
+                    
+                    # Process through agent system
+                    agent_response = await agent_system.process_message(
+                        message=button_message, 
+                        session=session
+                    )
+                    
+                    logger.info(f"🤖 [BUTTON] Agent response generated: {agent_response[:100]}...")
+                    
+                    # Send response via AiSensy
+                    success = await send_message_via_aisensy(
+                        to_phone=user_number,
+                        message=agent_response,
+                        whatsapp_business_account=whatsapp_business_account
+                    )
+                    
+                    if success:
+                        logger.info(f"✅ [BUTTON] Response sent successfully to {user_number}")
+                    else:
+                        logger.error(f"❌ [BUTTON] Failed to send response to {user_number}")
+                    
+                    # Update session
+                    session_manager.update_session(user_number, session)
+                    
+                except Exception as e:
+                    logger.error(f"❌ [BUTTON] Processing error: {e}")
+                    
+                    # Send error response
+                    error_response = "Sorry, I encountered an error processing your request. Please try again."
+                    await send_message_via_aisensy(
+                        to_phone=user_number,
+                        message=error_response,
+                        whatsapp_business_account=whatsapp_business_account
+                    )
         
-        # Get or create session for this user (PRESERVED LOGIC)
-        session = session_manager.get_session(from_number)
-        
-        # Process through agent system (PRESERVED LOGIC)
-        try:
-            agent_response = await agent_system.process_message(
-                message=message_text, 
-                session=session
-            )
-            
-            logger.info(f"🤖 [PROCESSOR] Agent response generated: {agent_response[:100]}...")
-            
-            # Send response via AiSensy (NEW - replaces logging)
-            success = await send_message_via_aisensy(
-                to_phone=from_number,
-                message=agent_response,
-                whatsapp_business_account=business_account
-            )
-            
-            if success:
-                logger.info(f"✅ [PROCESSOR] Response sent successfully to {from_number}")
-            else:
-                logger.error(f"❌ [PROCESSOR] Failed to send response to {from_number}")
-            
-            # Update session (PRESERVED LOGIC)
-            session_manager.update_session(from_number, session)
-            
-        except Exception as e:
-            logger.error(f"❌ [PROCESSOR] Agent processing error: {e}")
-            
-            # Send error response
-            error_response = "Sorry, I encountered an error processing your request. Please try again."
-            await send_message_via_aisensy(
-                to_phone=from_number,
-                message=error_response,
-                whatsapp_business_account=business_account
-            )
+        # Handle other message types (location, image, etc.)
+        else:
+            logger.info(f"ℹ️ [MESSAGE] Received {message_type} message from {user_number}, skipping processing")
             
     except Exception as e:
         logger.error(f"💥 [PROCESSOR] Error processing single message: {e}")
@@ -187,22 +274,19 @@ async def process_single_message(message_data: Dict[str, Any], business_account:
 async def start_pubsub_listener():
     """
     Start the Pub/Sub listener for processing messages
+    Note: This is now handled by the REST endpoint (/post) but kept for compatibility
     """
     global pubsub_processor
     
     try:
-        logger.info("🚀 [STARTUP] Starting Pub/Sub message processor...")
+        logger.info("🚀 [STARTUP] Pub/Sub processing now handled by REST endpoint")
+        logger.info("ℹ️ [STARTUP] Messages will be processed via POST /")
         
-        # Initialize pub/sub processor
-        pubsub_processor = PubSubMessageProcessor(
-            message_handler=process_webhook_message
-        )
-        
-        # Start listening for messages
-        await pubsub_processor.start_listening()
+        # No longer starting the pub/sub listener since we use REST endpoint
+        # This allows for easier testing and matches the reference implementation
         
     except Exception as e:
-        logger.error(f"❌ [STARTUP] Failed to start Pub/Sub listener: {e}")
+        logger.error(f"❌ [STARTUP] Failed to start listener: {e}")
         raise
 
 @app.on_event("startup")
