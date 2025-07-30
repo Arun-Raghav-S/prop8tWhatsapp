@@ -1,0 +1,54 @@
+substitutions:
+  _REGION: 'asia-south1'
+  _SERVICE_NAME: 'whatsapp-agent-processing-worker'
+  _MEMORY: '1Gi'
+  _CPU: '2'
+  _TIMEOUT: '900'
+  _MAX_INSTANCES: '15'
+  _MIN_INSTANCES: '1'
+
+steps:
+  # Build the container image using Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/whatsapp-agent/${_SERVICE_NAME}:latest', './processing-worker']
+  
+  # Push the container image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/whatsapp-agent/${_SERVICE_NAME}:latest']
+  
+  # Deploy container image to Cloud Run with optimized settings for AI processing
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/whatsapp-agent/${_SERVICE_NAME}:latest'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '${_MEMORY}'
+      - '--cpu'
+      - '${_CPU}'
+      - '--port'
+      - '8080'
+      - '--timeout'
+      - '${_TIMEOUT}'
+      - '--max-instances'
+      - '${_MAX_INSTANCES}'
+      - '--min-instances'
+      - '${_MIN_INSTANCES}'
+      - '--set-env-vars'
+      - 'MODE=pub_sub_processing_worker'
+      - '--execution-environment=gen2'
+      - '--service-account'
+      - 'whatsapp-agent@$PROJECT_ID.iam.gserviceaccount.com'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/whatsapp-agent/${_SERVICE_NAME}:latest'

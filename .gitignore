@@ -1,0 +1,170 @@
+# =============================================================================
+# WHATSAPP AGENT (Bot + Node.js) - .gitignore
+# =============================================================================
+
+# =====================================
+# Environment Variables & Secrets
+# =====================================
+.env
+.env.local
+.env.production
+.env.staging
+.env.test
+.env.*.local
+
+# API Keys & Secrets
+**/config/secrets.json
+**/config/private.json
+api-keys.json
+secrets.txt
+whatsapp-token.txt
+
+# =====================================
+# WhatsApp Specific
+# =====================================
+# WhatsApp Web sessions
+sessions/
+.wwebjs_auth/
+.wwebjs_cache/
+
+# QR codes
+qr-codes/
+*.png
+*.jpg
+*.jpeg
+qr.png
+
+# WhatsApp media
+media/
+downloads/
+uploads/
+
+# Bot data
+bot-data/
+user-data/
+chat-history/
+
+# =====================================
+# Node.js & JavaScript
+# =====================================
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory
+coverage/
+*.lcov
+.nyc_output
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# =====================================
+# Bot-Specific Files
+# =====================================
+# User sessions
+user-sessions/
+chat-sessions/
+
+# Bot logs
+bot-logs/
+conversation-logs/
+
+# Cached responses
+response-cache/
+message-cache/
+
+# User preferences
+user-preferences/
+settings/
+
+# =====================================
+# Logs & Monitoring
+# =====================================
+logs/
+*.log
+debug.log
+error.log
+access.log
+combined.log
+bot.log
+whatsapp.log
+
+# =====================================
+# Temporary & Cache Files
+# =====================================
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+.cache/
+.tmp/
+tmp/
+temp/
+
+# =====================================
+# Development Tools
+# =====================================
+# VS Code
+.vscode/
+!.vscode/settings.json
+
+# JetBrains IDEs
+.idea/
+
+# =====================================
+# Security & Sensitive Data
+# =====================================
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+
+# SSH keys
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# =====================================
+# Operating System
+# =====================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+.directory 
