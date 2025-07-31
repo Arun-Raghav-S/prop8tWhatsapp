@@ -77,31 +77,41 @@ async def health_check():
 @app.post("/")
 async def process_message(request: Request):
     """Process messages from Pub/Sub (main processing endpoint)"""
+    logger.info("🚀 [DEBUG] POST / endpoint called")
+    logger.info(f"🚀 [DEBUG] Request headers: {dict(request.headers)}")
+    
     try:
         # 1. Get the Pub/Sub message envelope
         envelope = await request.json()
+        logger.info(f"🚀 [DEBUG] Received envelope: {json.dumps(envelope, indent=2) if envelope else 'None'}")
         if not envelope or "message" not in envelope:
             logger.error("Invalid Pub/Sub message format")
-            return {"error": "Bad Request"}, 400
+            raise HTTPException(status_code=400, detail="Invalid Pub/Sub message format")
 
         # 2. Decode the actual data sent from the ingestion service
         pubsub_message = envelope["message"]
         if "data" not in pubsub_message:
             logger.error("No data in Pub/Sub message")
-            return {"error": "Bad Request"}, 400
+            raise HTTPException(status_code=400, detail="No data in Pub/Sub message")
             
         # Decode the base64 data
         try:
+            logger.info(f"🚀 [DEBUG] Raw base64 data: {pubsub_message['data'][:100]}...")
             data_str = base64.b64decode(pubsub_message["data"]).decode("utf-8")
+            logger.info(f"🚀 [DEBUG] Decoded data string: {data_str[:200]}...")
             payload_data = json.loads(data_str)
+            logger.info(f"🚀 [DEBUG] Parsed payload: {json.dumps(payload_data, indent=2)}")
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"Error decoding Pub/Sub message data: {e}")
-            return {"error": "Invalid message data"}, 400
+            logger.error(f"🚀 [DEBUG] Failed to decode data: {pubsub_message.get('data', 'NO_DATA')}")
+            raise HTTPException(status_code=400, detail="Invalid message data")
         
-        logger.info(f"🚀 [PUB_SUB] Processing message from Pub/Sub: {payload_data}")
+        logger.info(f"🚀 [PUB_SUB] Processing message from Pub/Sub")
+        logger.info(f"🚀 [DEBUG] Payload object type: {payload_data.get('object')}")
         
         # 3. Process WhatsApp Business Account webhook (from AiSensy)
         if payload_data.get("object") == "whatsapp_business_account":
+            logger.info("🚀 [DEBUG] Processing WhatsApp Business Account webhook")
             entries = payload_data.get("entry", [])
             
             for entry in entries:
@@ -122,14 +132,24 @@ async def process_message(request: Request):
                         messages = value.get("messages", [])
                         statuses = value.get("statuses", [])
                         
+                        logger.info(f"🚀 [DEBUG] Found {len(messages)} messages to process")
                         for message in messages:
+                            logger.info(f"🚀 [DEBUG] Processing message: {message.get('id', 'NO_ID')}")
                             await process_single_message(message, whatsapp_business_account)
                             
+        logger.info("🚀 [DEBUG] Successfully processed all messages")
         return {"success": True}
         
+    except HTTPException as he:
+        logger.error(f"💥 [PUB_SUB] HTTP Exception: {he.detail}")
+        raise he
     except Exception as e:
         logger.error(f"💥 [PUB_SUB] Error processing Pub/Sub message: {e}")
-        return {"error": "Internal Server Error"}, 500
+        logger.error(f"💥 [DEBUG] Exception type: {type(e)}")
+        logger.error(f"💥 [DEBUG] Exception args: {e.args}")
+        import traceback
+        logger.error(f"💥 [DEBUG] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 async def process_single_message(message: Dict[str, Any], whatsapp_business_account: str) -> None:
     """
@@ -140,6 +160,8 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
         whatsapp_business_account: WhatsApp business account ID
     """
     try:
+        logger.info(f"🔄 [DEBUG] Processing single message: {message}")
+        
         # Handle different message types
         message_type = message.get("type")
         from_phone = message.get("from")
@@ -147,11 +169,15 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
         message_id = message.get("id")
         message_timestamp = message.get("timestamp")
         
+        logger.info(f"🔄 [DEBUG] Message details - Type: {message_type}, From: {user_number}, ID: {message_id}")
+        
         # Check for duplicate/delayed messages from AiSensy
+        logger.info(f"🔄 [DEBUG] Checking for duplicate message: {message_id}")
         if message_id:
             if is_duplicate_message(message_id, message_timestamp):
                 logger.warning(f"🚨 [DEDUP] Skipping duplicate/delayed message: {message_id}")
                 return  # Skip processing this message
+        logger.info(f"🔄 [DEBUG] Message is not duplicate, proceeding...")
         
         # Mark message as read and show typing indicator for better UX
         if message_id and whatsapp_business_account:
@@ -175,9 +201,11 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
             if user_number and text_message and whatsapp_business_account:
                 try:
                     # Get or create session for this user
+                    logger.info(f"🔄 [DEBUG] Getting session for user: {user_number}")
                     session = session_manager.get_session(user_number)
                     
                     # Process through agent system
+                    logger.info(f"🔄 [DEBUG] Processing message through agent system...")
                     agent_response = await agent_system.process_message(
                         message=text_message, 
                         session=session
@@ -186,6 +214,7 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
                     logger.info(f"🤖 [TEXT] Agent response generated: {agent_response[:100]}...")
                     
                     # Send response via AiSensy
+                    logger.info(f"🔄 [DEBUG] Sending response to {user_number}")
                     success = await send_message_via_aisensy(
                         to_phone=user_number,
                         message=agent_response,

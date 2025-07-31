@@ -32,6 +32,11 @@ def health_check():
 def ingest_message():
     """Receive webhooks from AiSensy and publish to Pub/Sub"""
     try:
+        logger.info(f"📥 [DEBUG] POST / endpoint called on ingestion service")
+        logger.info(f"📥 [DEBUG] Request headers: {dict(request.headers)}")
+        logger.info(f"📥 [DEBUG] Request content type: {request.content_type}")
+        logger.info(f"📥 [DEBUG] Request method: {request.method}")
+        
         # Get the raw request body from AI Sensy
         data = request.get_data()
         if not data:
@@ -40,21 +45,33 @@ def ingest_message():
 
         logger.info(f"📥 [INGESTION] Received message, publishing to {topic_path}...")
         logger.info(f"📥 [INGESTION] Data size: {len(data)} bytes")
+        logger.info(f"📥 [DEBUG] Raw data preview: {data[:200]}...")
         
         try:
             # Publish the data as a bytestring to the Pub/Sub topic
+            logger.info(f"📥 [DEBUG] Publishing to topic: {topic_path}")
             future = publisher.publish(topic_path, data)
-            future.result()  # Wait for the publish to complete
+            message_id = future.result()  # Wait for the publish to complete
             logger.info(f"✅ [INGESTION] Message published successfully to Pub/Sub")
+            logger.info(f"📥 [DEBUG] Pub/Sub message ID: {message_id}")
         except Exception as e:
             logger.error(f"❌ [INGESTION] Error publishing to Pub/Sub: {e}")
+            logger.error(f"📥 [DEBUG] Exception type: {type(e)}")
+            logger.error(f"📥 [DEBUG] Exception args: {e.args}")
+            import traceback
+            logger.error(f"📥 [DEBUG] Traceback: {traceback.format_exc()}")
             return "Error queueing message", 500
 
         # Immediately return a success response to AI Sensy
+        logger.info(f"📥 [DEBUG] Returning success response to AiSensy")
         return "OK", 200
         
     except Exception as e:
         logger.error(f"❌ [INGESTION] Error processing webhook: {e}")
+        logger.error(f"📥 [DEBUG] Exception type: {type(e)}")
+        logger.error(f"📥 [DEBUG] Exception args: {e.args}")
+        import traceback
+        logger.error(f"📥 [DEBUG] Traceback: {traceback.format_exc()}")
         return "Internal server error", 500
 
 @app.route("/webhook", methods=["GET"])
