@@ -7,9 +7,19 @@ from src.config import config
 
 logger = logging.getLogger(__name__)
 
-# Token management
-current_access_token = config.AISENSY_ACCESS_TOKEN
-token_expiry_time = None
+# In-memory token management for each business account
+_token_cache = {}
+
+def get_access_token(whatsapp_business_account: str) -> str:
+    """Get the current access token for a business account"""
+    global _token_cache
+    return _token_cache.get(whatsapp_business_account, config.AISENSY_ACCESS_TOKEN)
+
+def set_access_token(whatsapp_business_account: str, token: str):
+    """Set the access token for a business account in memory"""
+    global _token_cache
+    _token_cache[whatsapp_business_account] = token
+    logger.info(f"🔄 TOKEN_CACHED: Updated token for {whatsapp_business_account}")
 
 async def fetch_tokens_from_database(whatsapp_business_account: str) -> Dict[str, Optional[str]]:
     """
@@ -47,6 +57,11 @@ async def fetch_tokens_from_database(whatsapp_business_account: str) -> Dict[str
                 if data and len(data) > 0:
                     agent_data = data[0]
                     logger.info(f"Successfully fetched tokens for business account: {whatsapp_business_account}")
+                    
+                    # Cache the access token in memory
+                    if agent_data.get("access_token"):
+                        set_access_token(whatsapp_business_account, agent_data["access_token"])
+                    
                     return {
                         "access_token": agent_data.get("access_token"),
                         "refresh_token": agent_data.get("refresh_token")
@@ -159,8 +174,14 @@ async def refresh_access_token(whatsapp_business_account: str) -> Optional[str]:
                 expires_in = token_data.get("expires_in", 3600)  # Default to 1 hour
                 
                 if new_access_token:
+                    # Update global token (keep for backwards compatibility)
+                    global current_access_token, token_expiry_time
                     current_access_token = new_access_token
                     token_expiry_time = datetime.now() + timedelta(seconds=expires_in)
+                    
+                    # Update token cache for this business account
+                    set_access_token(whatsapp_business_account, new_access_token)
+                    
                     logger.info(f"AiSensy JWT token refreshed successfully for business account: {whatsapp_business_account}. New token: {new_access_token[:20]}...")
                     
                     # Save the new access token to database
@@ -182,25 +203,24 @@ async def refresh_access_token(whatsapp_business_account: str) -> Optional[str]:
         logger.error(f"Error refreshing AiSensy JWT token: {e}")
         return None
 
-async def get_valid_access_token(whatsapp_business_account: str) -> Optional[str]:
-    """Get a valid access token, refreshing if necessary"""
+async def get_valid_access_token(whatsapp_business_account: str = None) -> Optional[str]:
+    """Get a valid access token, using cache first, then refreshing if necessary"""
     global current_access_token, token_expiry_time
     
-    # First try to get the current token from database
-    tokens = await fetch_tokens_from_database(whatsapp_business_account)
-    db_access_token = tokens.get("access_token")
+    # First check in-memory cache for this business account
+    if whatsapp_business_account:
+        cached_token = get_access_token(whatsapp_business_account)
+        if cached_token and cached_token != config.AISENSY_ACCESS_TOKEN:
+            logger.info(f"🔄 TOKEN_FROM_CACHE: Using cached token for {whatsapp_business_account}")
+            return cached_token
     
-    # Use database token if available, otherwise fall back to current in-memory token
-    if db_access_token:
-        current_access_token = db_access_token
-    elif not current_access_token:
-        # If no token in memory and no token in database, use environment variable
-        current_access_token = config.AISENSY_ACCESS_TOKEN
-    
-    # If token is about to expire (within 5 minutes), refresh it
-    if token_expiry_time and datetime.now() >= (token_expiry_time - timedelta(minutes=5)):
-        logger.info(f"Token is about to expire, refreshing for business account: {whatsapp_business_account}...")
+    # If cached token is invalid, try to refresh
+    if whatsapp_business_account:
+        logger.info(f"🔄 TOKEN_REFRESH_ATTEMPT: Refreshing token for {whatsapp_business_account}")
         refreshed_token = await refresh_access_token(whatsapp_business_account)
-        return refreshed_token if refreshed_token else current_access_token
+        if refreshed_token:
+            return refreshed_token
     
-    return current_access_token
+    # Fallback to environment variable
+    logger.info(f"🔄 TOKEN_FALLBACK: Using environment token")
+    return config.AISENSY_ACCESS_TOKEN

@@ -107,7 +107,7 @@ class WhatsAppAgentSystem:
             # Update session context
             session.current_agent = agent_choice
             
-            logger.info(f"✅ Message processed successfully by {agent_choice} agent in {processing_time:.0f}ms")
+            logger.info(f"✅ RESPONSE_SENT: {agent_choice} agent ({processing_time:.0f}ms) -> {response[:100]}...")
             
             return response
             
@@ -170,7 +170,7 @@ Respond with only one word: conversation, property_search, or statistics
                 logger.warning(f"Invalid agent choice: {agent_choice}, defaulting to conversation")
                 agent_choice = "conversation"
             
-            logger.info(f"Triage decision: {agent_choice} for message: '{message[:50]}...'")
+            logger.info(f"🔀 AGENT_ROUTED: {agent_choice} for: '{message[:50]}...'")
             return agent_choice
             
         except Exception as e:
@@ -295,11 +295,66 @@ class PropertySearchAgent:
                 session_manager = SessionManager()
                 session_manager.set_active_properties(session.user_id, properties_data)
                 
-                logger.info(f"🏠 Stored {len(properties_data)} active properties for user {session.user_id}")
+                logger.info(f"🏠 PROPERTIES_STORED: {len(properties_data)} properties for user {session.user_id}")
             
             # Handle clarification requests
             if hasattr(search_result, 'requires_clarification') and search_result.requires_clarification:
                 return search_result.clarification_message
+            
+            # Check if we should send carousel for large result sets
+            if search_result.context and len(search_result.context) >= 7:
+                from tools.whatsapp_carousel_tool import carousel_tool
+                
+                logger.info(f"🎠 CAROUSEL_CHECK: Found {len(search_result.context)} properties, checking if suitable for carousel")
+                
+                # Check if query is suitable for carousel
+                if carousel_tool.should_send_carousel(message, len(search_result.context)):
+                    logger.info(f"🎠 CAROUSEL_SUITABLE: Query '{message[:30]}...' is suitable for carousel")
+                    
+                    # Extract original property IDs
+                    property_ids = []
+                    for prop in search_result.context:
+                        if hasattr(prop, 'original_property_id') and prop.original_property_id:
+                            property_ids.append(str(prop.original_property_id))
+                    
+                    logger.info(f"🎠 CAROUSEL_IDS: Extracted {len(property_ids)} original property IDs")
+                    
+                    # Only send carousel if we have enough original property IDs
+                    if len(property_ids) >= 7:
+                        try:
+                            logger.info(f"🎠 CAROUSEL_ATTEMPT: Sending carousel with {len(property_ids)} properties")
+                            
+                            # Send carousel broadcast
+                            carousel_result = await carousel_tool.send_property_carousel(
+                                session.user_id,  # Assuming user_id is the phone number
+                                property_ids,
+                                max_properties=10
+                            )
+                            
+                            if carousel_result['success']:
+                                logger.info(f"🎠 CAROUSEL_SENT: {carousel_result['property_count']} properties to {session.user_id}")
+                                # Return simple one-line response
+                                property_count = carousel_result['property_count']
+                                return f"🏠 Here are {property_count} properties that match your search! I've sent you property cards with all the details."
+                            else:
+                                logger.error(f"❌ CAROUSEL_FAILED: {carousel_result['message']}")
+                                # Fall back to text response
+                                return search_result.answer
+                        except Exception as carousel_error:
+                            logger.error(f"❌ CAROUSEL_ERROR: {str(carousel_error)}")
+                            # Fall back to text response
+                            return search_result.answer
+                    else:
+                        logger.info(f"🎠 CAROUSEL_SKIP: Not enough property IDs ({len(property_ids)}/7)")
+                        return search_result.answer
+                else:
+                    logger.info(f"🎠 CAROUSEL_SKIP: Query not suitable for carousel")
+                    return search_result.answer
+            else:
+                if search_result.context:
+                    logger.info(f"🎠 CAROUSEL_SKIP: Only {len(search_result.context)} properties (< 7 required)")
+                else:
+                    logger.info(f"🎠 CAROUSEL_SKIP: No properties found")
             
             # Return the generated answer directly from the advanced agent
             return search_result.answer

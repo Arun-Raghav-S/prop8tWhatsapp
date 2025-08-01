@@ -85,14 +85,27 @@ class ResponseCache:
         """Determine if we can use a template response"""
         query_lower = query.lower().strip()
         
-        # Generic property requests
+        # DISABLE templates for carousel-suitable queries
+        carousel_keywords = [
+            'what all properties', 'cheapest', 'top', 'best', 'tell me', 
+            'all properties', 'available properties', 'show me all'
+        ]
+        
+        # If query is suitable for carousel, don't use template - go through full pipeline
+        if any(keyword in query_lower for keyword in carousel_keywords):
+            logger.info(f"🎠 TEMPLATE_DISABLED: Carousel-suitable query, using full pipeline")
+            return None
+        
+        # Generic property requests (only very basic ones)
         generic_patterns = [
-            'properties', 'show me', 'find me', 'what do you have',
-            'any properties', 'available properties', 'property options'
+            'properties', 'show me', 'find me',  # Removed patterns that could trigger carousel
+            'property options'
         ]
         
         if any(pattern in query_lower for pattern in generic_patterns):
-            return 'generic_properties'
+            # But still check if this might be a carousel query
+            if not any(keyword in query_lower for keyword in carousel_keywords):
+                return 'generic_properties'
         
         # Booking confirmations
         booking_patterns = ['book', 'schedule', 'visit', 'viewing', 'appointment']

@@ -35,7 +35,6 @@ gcloud run deploy prop8t-whatsapp-processing-worker \
   --port 8080 \
   --timeout 900 \
   --execution-environment gen2 \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GCP_PROJECT=$PROJECT_ID,PUBSUB_SUBSCRIPTION=prop8t-message-processing-sub,MODE=pub_sub_processing_worker"
 
 cd ..
 

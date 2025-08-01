@@ -37,7 +37,7 @@ class LocalTestClient:
     def __init__(self):
         self.agent_system = WhatsAppAgentSystem()
         self.session_manager = SessionManager()
-        self.test_user_number = "+1234567890"  # Default test user
+        self.test_user_number = "+918281840462"  # Default test user
         self.test_business_account = "test_business_account"  # Default test business account
         self.session = None
         

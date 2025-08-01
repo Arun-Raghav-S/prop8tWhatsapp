@@ -69,6 +69,7 @@ class QueryParams(BaseModel):
 class PropertyResult(BaseModel):
     """Property search result - matches TypeScript interface"""
     id: str
+    original_property_id: Optional[str] = None  # Added for carousel broadcast
     property_type: str
     sale_or_rent: str
     bedrooms: int
@@ -179,6 +180,7 @@ class AdvancedPropertySearchAgent:
             logger.info(f"🔧 Query corrected: '{user_query}' → '{normalized_query}'")
         
         # STEP 2: Check cache first (with error handling)
+        cache_key = None
         try:
             cache_key = response_cache._generate_cache_key(normalized_query, user_context)
             cached_response = response_cache.get(cache_key)
@@ -188,6 +190,7 @@ class AdvancedPropertySearchAgent:
                 return AgentResponse(**cached_response)
         except Exception as e:
             logger.warning(f"Cache lookup failed, proceeding without cache: {e}")
+            cache_key = None
         
         logger.info(f"🚀 Starting TAG Pipeline for: {normalized_query}")
 
@@ -222,8 +225,10 @@ class AdvancedPropertySearchAgent:
         try:
             template_type = response_cache.can_use_template(normalized_query)
             if template_type:
-                logger.info(f"📋 Using template response: {template_type}")
+                logger.info(f"📋 TEMPLATE_USED: {template_type} (bypassing carousel logic)")
                 return await self._process_with_template(normalized_query, template_type, start_time)
+            else:
+                logger.info(f"🎠 TEMPLATE_SKIPPED: Using full pipeline for potential carousel")
         except Exception as e:
             logger.warning(f"Template check failed, using full pipeline: {e}")
 
@@ -260,7 +265,7 @@ class AdvancedPropertySearchAgent:
 
         # Query Execution  
         search_start = time.time()
-        search_results, industrial_features = await self.execute_query(extracted_params)
+        search_results, industrial_features = await self.execute_query(extracted_params, normalized_query)
         search_time = (time.time() - search_start) * 1000
 
         # Check if clarification is needed
@@ -296,7 +301,10 @@ class AdvancedPropertySearchAgent:
         
         # STEP 5: Cache the response (with error handling)
         try:
-            response_cache.set(cache_key, response.dict())
+            if cache_key:
+                response_cache.set(cache_key, response.dict())
+            else:
+                logger.info("🎠 CACHE_SKIP: No cache key available (likely carousel query)")
         except Exception as e:
             logger.warning(f"Failed to cache response: {e}")
         
@@ -505,7 +513,7 @@ Return only the JSON object, no additional text."""
             logger.error(f"❌ Embedding generation failed: {str(e)}")
             return None
 
-    async def execute_query(self, extracted_params: QueryParams) -> tuple[List[PropertyResult], Dict[str, bool]]:
+    async def execute_query(self, extracted_params: QueryParams, normalized_query: str = "") -> tuple[List[PropertyResult], Dict[str, bool]]:
         """
         Industrial-grade query execution - optimized for speed
         """
@@ -529,17 +537,51 @@ Return only the JSON object, no additional text."""
                 if query_text.lower().strip() in simple_queries:
                     query_text = ''
             
-            # 🚨 INTELLIGENT QUESTION HANDLING: Ask for clarification when needed
-            if not extracted_params.sale_or_rent and query_text.lower().strip() in ['properties', 'property', 'show me properties', 'what properties do you have']:
+            # 🚨 INTELLIGENT QUESTION HANDLING: Ask for clarification only for very basic queries
+            # BUT allow general queries like "cheapest properties", "top 10 properties" to proceed
+            very_basic_queries = ['properties', 'property', 'show me properties']
+            should_ask_clarification = (
+                not extracted_params.sale_or_rent and 
+                query_text.lower().strip() in very_basic_queries and
+                not any(keyword in query_text.lower() for keyword in ['cheapest', 'top', 'best', 'all', 'available', 'tell me'])
+            )
+            
+            if should_ask_clarification:
                 # Return empty results but with clarification flag
                 features_used = {'intelligent_question_handling': True}
                 return [], features_used
             
-            # Prepare search parameters
-            match_count = extracted_params.match_count or self.config["default_limit"]
+            # Prepare search parameters with intelligent match count for general queries
+            base_match_count = extracted_params.match_count or self.config["default_limit"]
+            
+            # Increase match count for general queries that could benefit from carousel
+            general_query_keywords = [
+                'properties', 'property', 'show me', 'list', 'all properties', 
+                'what properties', 'available properties', 'cheapest', 'best', 
+                'good properties', 'top', 'most affordable', 'tell me'
+            ]
+            
+            # Check query_text, extracted_params.query_text AND original normalized_query for general keywords
+            is_general_query = (
+                any(keyword in query_text.lower() for keyword in general_query_keywords) or
+                any(keyword in extracted_params.query_text.lower() if extracted_params.query_text else False for keyword in general_query_keywords) or
+                any(keyword in normalized_query.lower() for keyword in general_query_keywords)
+            )
+            
+            if is_general_query and base_match_count <= 15:
+                match_count = 20  # Increase for general queries to enable carousel
+                logger.info(f"🎠 CAROUSEL_LOGIC: General query detected, increasing match_count to {match_count}")
+                
+                # For general queries without sale_or_rent, search both to maximize results
+                if not extracted_params.sale_or_rent:
+                    logger.info(f"🎠 CAROUSEL_LOGIC: No sale_or_rent specified, will search both sale and rent for maximum results")
+            else:
+                match_count = base_match_count
+                
             intelligent_limit = extracted_params.intelligent_limit if extracted_params.intelligent_limit is not None else True
             
-            logger.info(f"📊 Using match count: {match_count} (intelligent: {intelligent_limit})")
+            logger.info(f"📊 SEARCH_PARAMS: match_count={match_count}, intelligent_limit={intelligent_limit}, is_general={is_general_query}")
+            logger.info(f"🔍 QUERY_DEBUG: query_text='{query_text}', extracted_query='{extracted_params.query_text}', normalized='{normalized_query}'")
 
             # Handle OR conditions for property_type and localities
             all_results = []
@@ -556,115 +598,122 @@ Return only the JSON object, no additional text."""
                 else [None]
             )
 
-            logger.info(f"🔄 OR Logic: {len(property_types)} property types × {len(localities)} localities = {len(property_types) * len(localities)} searches")
+            # For general queries without sale_or_rent, search both to maximize carousel results
+            sale_or_rent_values = []
+            if extracted_params.sale_or_rent:
+                sale_or_rent_values = [extracted_params.sale_or_rent]
+            elif is_general_query:
+                # Search both sale and rent for general queries to get more results for carousel
+                sale_or_rent_values = ['sale', 'rent']
+                logger.info(f"🎠 CAROUSEL_LOGIC: Searching both sale and rent for general query")
+            else:
+                sale_or_rent_values = [None]  # Let database decide
 
             # Execute searches for all combinations
             for property_type in property_types:
                 for locality in localities:
-                    search_params = {
-                        "user_query_text": query_text,
-                        "user_query_embedding": query_embedding,
-                        "match_count": match_count,
-                        "full_text_weight": 1.0,
-                        "semantic_weight": 1.0,
-                        "rrf_k": 60,
-                    }
-                    
-                    # Add all conditional parameters (matching NEW address schema)
-                    if property_type:
-                        search_params["p_property_type"] = property_type
-                    if extracted_params.sale_or_rent:
-                        search_params["p_sale_or_rent"] = extracted_params.sale_or_rent
-                    if extracted_params.bedrooms:
-                        search_params["p_bedrooms"] = extracted_params.bedrooms
-                    if extracted_params.bathrooms:
-                        search_params["p_bathrooms"] = extracted_params.bathrooms
-                    if extracted_params.min_bua_sqft:
-                        search_params["p_min_bua_sqft"] = extracted_params.min_bua_sqft
-                    if extracted_params.max_bua_sqft:
-                        search_params["p_max_bua_sqft"] = extracted_params.max_bua_sqft
-                    if extracted_params.min_sale_price_aed:
-                        search_params["p_min_sale_price_aed"] = extracted_params.min_sale_price_aed
-                    if extracted_params.max_sale_price_aed:
-                        search_params["p_max_sale_price_aed"] = extracted_params.max_sale_price_aed
-                    if extracted_params.min_rent_price_aed:
-                        search_params["p_min_rent_price_aed"] = extracted_params.min_rent_price_aed
-                    if extracted_params.max_rent_price_aed:
-                        search_params["p_max_rent_price_aed"] = extracted_params.max_rent_price_aed
-                    
-                    # NEW ADDRESS-BASED PARAMETERS (updated for new schema)
-                    if extracted_params.city:
-                        search_params["p_city"] = extracted_params.city
-                    if locality:
-                        search_params["p_locality"] = locality
-                    if extracted_params.address_search:
-                        search_params["p_address_search"] = extracted_params.address_search
-                    
-                    # Positive boolean filters
-                    if extracted_params.study is not None:
-                        search_params["p_study"] = extracted_params.study
-                    if extracted_params.maid_room is not None:
-                        search_params["p_maid_room"] = extracted_params.maid_room
-                    if extracted_params.laundry_room is not None:
-                        search_params["p_laundry_room"] = extracted_params.laundry_room
-                    if extracted_params.additional_reception_area is not None:
-                        search_params["p_additional_reception_area"] = extracted_params.additional_reception_area
-                    if extracted_params.park_pool_view is not None:
-                        search_params["p_park_pool_view"] = extracted_params.park_pool_view
-                    if extracted_params.upgraded_ground_flooring is not None:
-                        search_params["p_upgraded_ground_flooring"] = extracted_params.upgraded_ground_flooring
-                    if extracted_params.landscaped_garden is not None:
-                        search_params["p_landscaped_garden"] = extracted_params.landscaped_garden
-                    
-                    # REVOLUTIONARY: Negative boolean filters
-                    if extracted_params.no_maid_room is not None:
-                        search_params["p_no_maid_room"] = extracted_params.no_maid_room
-                    if extracted_params.no_study is not None:
-                        search_params["p_no_study"] = extracted_params.no_study
-                    if extracted_params.no_laundry_room is not None:
-                        search_params["p_no_laundry_room"] = extracted_params.no_laundry_room
-                    if extracted_params.no_additional_reception_area is not None:
-                        search_params["p_no_additional_reception_area"] = extracted_params.no_additional_reception_area
-                    if extracted_params.no_park_pool_view is not None:
-                        search_params["p_no_park_pool_view"] = extracted_params.no_park_pool_view
-                    if extracted_params.no_upgraded_ground_flooring is not None:
-                        search_params["p_no_upgraded_ground_flooring"] = extracted_params.no_upgraded_ground_flooring
-                    if extracted_params.no_landscaped_garden is not None:
-                        search_params["p_no_landscaped_garden"] = extracted_params.no_landscaped_garden
-                    
-                    # Counter filters
-                    if extracted_params.min_covered_parking:
-                        search_params["p_min_covered_parking"] = extracted_params.min_covered_parking
-                    if extracted_params.max_covered_parking:
-                        search_params["p_max_covered_parking"] = extracted_params.max_covered_parking
-                    if extracted_params.min_balconies:
-                        search_params["p_min_balconies"] = extracted_params.min_balconies
-                    if extracted_params.max_balconies:
-                        search_params["p_max_balconies"] = extracted_params.max_balconies
-                    
-                    # INDUSTRIAL-GRADE: Advanced sorting and query type
-                    if extracted_params.sort_by:
-                        search_params["p_sort_by"] = extracted_params.sort_by
-                    if extracted_params.query_type:
-                        search_params["p_query_type"] = extracted_params.query_type
-                    if intelligent_limit:
-                        search_params["p_intelligent_limit"] = intelligent_limit
-
-                    logger.info(f"🔍 Industrial Search: {property_type or 'Any'} in {locality or 'Any location'}")
-                    if extracted_params.sort_by:
-                        logger.info(f"📊 Sorting by: {extracted_params.sort_by}")
-                    if extracted_params.no_maid_room:
-                        logger.info("🚫 Excluding properties WITH maid room")
-
-                    # Execute the search with proper error handling
-                    try:
-                        response = self.supabase.rpc('hybrid_property_search', search_params).execute()
+                    for sale_or_rent in sale_or_rent_values:
+                        search_params = {
+                            "user_query_text": query_text,
+                            "user_query_embedding": query_embedding,
+                            "match_count": match_count,
+                            "full_text_weight": 1.0,
+                            "semantic_weight": 1.0,
+                            "rrf_k": 60,
+                        }
                         
-                        if response.data and isinstance(response.data, list) and len(response.data) > 0:
-                            all_results.extend(response.data)
-                    except Exception as search_error:
-                        logger.warning(f"⚠️ Search failed: {str(search_error)}")
-                        continue
+                        # Add all conditional parameters (matching NEW address schema)
+                        if property_type:
+                            search_params["p_property_type"] = property_type
+                        if sale_or_rent:
+                            search_params["p_sale_or_rent"] = sale_or_rent
+                        if extracted_params.bedrooms:
+                            search_params["p_bedrooms"] = extracted_params.bedrooms
+                        if extracted_params.bathrooms:
+                            search_params["p_bathrooms"] = extracted_params.bathrooms
+                        if extracted_params.min_bua_sqft:
+                            search_params["p_min_bua_sqft"] = extracted_params.min_bua_sqft
+                        if extracted_params.max_bua_sqft:
+                            search_params["p_max_bua_sqft"] = extracted_params.max_bua_sqft
+                        if extracted_params.min_sale_price_aed:
+                            search_params["p_min_sale_price_aed"] = extracted_params.min_sale_price_aed
+                        if extracted_params.max_sale_price_aed:
+                            search_params["p_max_sale_price_aed"] = extracted_params.max_sale_price_aed
+                        if extracted_params.min_rent_price_aed:
+                            search_params["p_min_rent_price_aed"] = extracted_params.min_rent_price_aed
+                        if extracted_params.max_rent_price_aed:
+                            search_params["p_max_rent_price_aed"] = extracted_params.max_rent_price_aed
+                        
+                        # NEW ADDRESS-BASED PARAMETERS (updated for new schema)
+                        if extracted_params.city:
+                            search_params["p_city"] = extracted_params.city
+                        if locality:
+                            search_params["p_locality"] = locality
+                        if extracted_params.address_search:
+                            search_params["p_address_search"] = extracted_params.address_search
+                        
+                        # Positive boolean filters
+                        if extracted_params.study is not None:
+                            search_params["p_study"] = extracted_params.study
+                        if extracted_params.maid_room is not None:
+                            search_params["p_maid_room"] = extracted_params.maid_room
+                        if extracted_params.laundry_room is not None:
+                            search_params["p_laundry_room"] = extracted_params.laundry_room
+                        if extracted_params.additional_reception_area is not None:
+                            search_params["p_additional_reception_area"] = extracted_params.additional_reception_area
+                        if extracted_params.park_pool_view is not None:
+                            search_params["p_park_pool_view"] = extracted_params.park_pool_view
+                        if extracted_params.upgraded_ground_flooring is not None:
+                            search_params["p_upgraded_ground_flooring"] = extracted_params.upgraded_ground_flooring
+                        if extracted_params.landscaped_garden is not None:
+                            search_params["p_landscaped_garden"] = extracted_params.landscaped_garden
+                        
+                        # REVOLUTIONARY: Negative boolean filters
+                        if extracted_params.no_maid_room is not None:
+                            search_params["p_no_maid_room"] = extracted_params.no_maid_room
+                        if extracted_params.no_study is not None:
+                            search_params["p_no_study"] = extracted_params.no_study
+                        if extracted_params.no_laundry_room is not None:
+                            search_params["p_no_laundry_room"] = extracted_params.no_laundry_room
+                        if extracted_params.no_additional_reception_area is not None:
+                            search_params["p_no_additional_reception_area"] = extracted_params.no_additional_reception_area
+                        if extracted_params.no_park_pool_view is not None:
+                            search_params["p_no_park_pool_view"] = extracted_params.no_park_pool_view
+                        if extracted_params.no_upgraded_ground_flooring is not None:
+                            search_params["p_no_upgraded_ground_flooring"] = extracted_params.no_upgraded_ground_flooring
+                        if extracted_params.no_landscaped_garden is not None:
+                            search_params["p_no_landscaped_garden"] = extracted_params.no_landscaped_garden
+                        
+                        # Counter filters
+                        if extracted_params.min_covered_parking:
+                            search_params["p_min_covered_parking"] = extracted_params.min_covered_parking
+                        if extracted_params.max_covered_parking:
+                            search_params["p_max_covered_parking"] = extracted_params.max_covered_parking
+                        if extracted_params.min_balconies:
+                            search_params["p_min_balconies"] = extracted_params.min_balconies
+                        if extracted_params.max_balconies:
+                            search_params["p_max_balconies"] = extracted_params.max_balconies
+                        
+                        # INDUSTRIAL-GRADE: Advanced sorting and query type
+                        if extracted_params.sort_by:
+                            search_params["p_sort_by"] = extracted_params.sort_by
+                        if extracted_params.query_type:
+                            search_params["p_query_type"] = extracted_params.query_type
+                        if intelligent_limit:
+                            search_params["p_intelligent_limit"] = intelligent_limit
+
+                        # Search parameters configured
+
+                        # Execute the search with proper error handling
+                        try:
+                            response = self.supabase.rpc('hybrid_property_search', search_params).execute()
+                            
+                            if response.data and isinstance(response.data, list) and len(response.data) > 0:
+                                all_results.extend(response.data)
+                                logger.info(f"🔍 SEARCH_RESULT: Found {len(response.data)} properties for {property_type or 'Any'}/{sale_or_rent or 'Any'}")
+                        except Exception as search_error:
+                            logger.warning(f"⚠️ Search failed: {str(search_error)}")
+                            continue
 
             # Remove duplicates based on ID (exact match to TypeScript)
             unique_results = []
@@ -679,6 +728,9 @@ Return only the JSON object, no additional text."""
                         result_data['covered_parking'] = result_data.get('covered_parking_spaces')
                     if 'rrf_score' in result_data:
                         result_data['search_rank'] = result_data.get('rrf_score')
+                    
+                    # Ensure original_property_id is included for carousel broadcast
+                    # The database should already return this field from the hybrid_property_search function
                     
                     # FIX: Parse address field if it's a string
                     if 'address' in result_data and result_data['address']:
@@ -708,41 +760,20 @@ Return only the JSON object, no additional text."""
                         continue
 
             query_execution_time = (time.time() - execution_start) * 1000
-            logger.info(f"✅ Found {len(unique_results)} unique properties from {len(all_results)} total results ({query_execution_time:.0f}ms total)")
+            logger.info(f"🔍 SEARCH_RESULTS: {len(unique_results)} properties found ({query_execution_time:.0f}ms)")
             
-            # PERFORMANCE MONITORING (exact match to TypeScript)
+            # PERFORMANCE MONITORING - only log if slow
             if query_execution_time > 8000:
-                logger.info(f"⚠️ Slow query detected: {query_execution_time:.0f}ms (target: <5000ms)")
-            elif query_execution_time < 3000:
-                logger.info(f"🚀 Fast query: {query_execution_time:.0f}ms")
+                logger.warning(f"⚠️ SLOW_QUERY: {query_execution_time:.0f}ms (target: <5000ms)")
 
-            # Show detailed preview of results (exact match to TypeScript)
+            # Log results summary for tracking
             if unique_results and len(unique_results) > 0:
-                logger.info("🏆 Industrial Results Preview:")
-                for i, prop in enumerate(unique_results[:3]):
-                    features = []
-                    if prop.study:
-                        features.append('Study')
-                    if prop.maid_room:
-                        features.append('Maid room')
-                    if prop.landscaped_garden:
-                        features.append('Garden')
-                    if prop.upgraded_ground_flooring:
-                        features.append('Upgraded Flooring')
-                    
-                    locality = prop.address.get('locality') if prop.address else None
-                    city = prop.address.get('city') if prop.address else None
-                    location = locality or city or 'Unknown location'
-                    
-                    logger.info(f"   {i + 1}. {prop.property_type} | {prop.bedrooms}BR/{prop.bathrooms}BA | {location}")
-                    
-                    price_text = f"{prop.sale_price_aed or 0} AED" if prop.sale_or_rent == 'sale' else f"{prop.rent_price_aed or 0} AED/yr"
-                    logger.info(f"      Price: {price_text}")
-                    logger.info(f"      Size: {prop.bua_sqft} sqft | Features: {', '.join(features) or 'None'}")
-                    score_value = prop.search_rank if prop.search_rank else 0
-                    logger.info(f"      Score: {score_value:.4f} | ID: {prop.id}")
+                # Just log count and basic info for flow tracking
+                sample_prop = unique_results[0]
+                locality = sample_prop.address.get('locality') if sample_prop.address else None
+                logger.info(f"🏠 RESULTS_PREVIEW: {sample_prop.property_type} in {locality or 'Unknown'} (+ {len(unique_results)-1} more)")
 
-            # Calculate industrial features used (exact match to TypeScript)
+            # Calculate industrial features used
             industrial_features = {
                 "negative_filtering": any(getattr(extracted_params, k, None) for k in dir(extracted_params) if k.startswith('no_')),
                 "sorting": bool(extracted_params.sort_by),
@@ -750,8 +781,6 @@ Return only the JSON object, no additional text."""
                 "intelligent_limits": intelligent_limit,
                 "multi_criteria_sorting": bool(extracted_params.sort_by and "_then_" in extracted_params.sort_by)
             }
-
-            logger.info(f"🏭 Industrial Features Used: {industrial_features}")
 
             return unique_results, industrial_features
             
