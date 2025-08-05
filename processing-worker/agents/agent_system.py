@@ -147,10 +147,10 @@ Available agents:
 3. "statistics" - For market analysis, price averages, trends, statistical queries about properties
 
 Rules:
-- If user is asking for property search (apartments, villas, rent, sale, specific locations), route to "property_search"
-- If user asks for statistics (average prices, market trends, what's the cheapest/most expensive), route to "statistics"  
+- If user is asking for property search (apartments, villas, properties, rent, sale, specific locations, "what apartments do you have", "show me properties"), route to "property_search"
+- If user asks ONLY for pure statistics (average prices, market trends) WITHOUT wanting to see specific properties, route to "statistics"  
 - For greetings, casual chat, help requests, or unclear messages, route to "conversation"
-- Consider the conversation context to maintain flow
+- When in doubt between property_search and statistics, choose "property_search"
 - NOTE: Follow-up questions about specific properties are handled by a separate system
 
 Respond with only one word: conversation, property_search, or statistics
@@ -185,74 +185,54 @@ class ConversationAgent:
     
     def __init__(self, openai_client: AsyncOpenAI):
         self.openai = openai_client
+        # Import here to avoid circular imports
+        from utils.whatsapp_formatter import whatsapp_formatter
+        self.formatter = whatsapp_formatter
     
     async def handle_message(self, message: str, session: ConversationSession) -> str:
         """
-        Handle general conversation messages
+        Handle general conversation messages with optimized WhatsApp formatting
         """
         try:
-            # Get conversation history for context
-            history = session.conversation_history[-10:] if session.conversation_history else []
+            message_lower = message.lower().strip()
             
-            system_prompt = """
-You are a friendly and helpful real estate assistant for a Dubai property search service. You handle general conversation, greetings, and provide help about the service.
-
-🏠 YOUR CAPABILITIES:
-- Advanced property search across Dubai (apartments, villas, penthouses, townhouses)
-- Market statistics and analysis with lightning-fast responses
-- Multi-agent system with specialized expertise
-- Industrial-grade search features (negative filtering, advanced sorting, etc.)
-
-✨ PERSONALITY & FORMATTING:
-- Professional but warm and approachable
-- Knowledgeable about Dubai real estate market
-- Helpful, patient, and enthusiastic
-- Use emojis appropriately for WhatsApp (🏠 🏢 📊 💰 📍 ✨)
-- Format responses for mobile viewing with line breaks
-- Use **bold** for important information
-
-📝 RESPONSE GUIDELINES:
-When users greet you or ask for help:
-- Start with a warm greeting using emojis
-- Briefly explain your advanced capabilities
-- Mention the multi-agent system features
-- Ask how you can assist them today
-- Provide clear examples of what they can ask
-
-EXAMPLES TO SUGGEST:
-• "Show me 3BR apartments in Marina"
-• "What's the average price in Downtown?"
-• "Find villas WITHOUT maid room in JBR"
-• "Cheapest penthouses in Palm Jumeirah"
-
-Keep responses concise, engaging, and mobile-friendly.
-"""
+            # Quick responses for common patterns (no AI needed)
+            if any(greeting in message_lower for greeting in ['hi', 'hello', 'hey', 'good morning', 'good evening']):
+                return self.formatter.format_greeting()
             
-            # Build messages array with history
-            messages = [{"role": "system", "content": system_prompt}]
+            if any(help_word in message_lower for help_word in ['help', 'what can you do', 'assist', 'guide']):
+                return self.formatter.format_help()
             
-            # Add recent conversation history
-            for msg in history:
-                messages.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
+            if any(thanks in message_lower for thanks in ['thank', 'thanks', 'appreciate']):
+                return f"You're welcome! {self.formatter.emojis['sparkles']} Anything else I can help you find? {self.formatter.emojis['property']}"
             
-            # Add current message
-            messages.append({"role": "user", "content": message})
-            
+            # For other conversation, use minimal AI with focused prompt
+            conversation_prompt = f"""
+You are a casual but helpful Dubai property assistant. Keep responses short and WhatsApp-friendly.
+
+User said: "{message}"
+
+Respond naturally and briefly. Use emojis sparingly. If they're asking about properties, guide them to be more specific.
+
+Examples:
+- "That's great! What kind of property are you looking for?"
+- "Sure! Try asking 'show me 2BR apartments in Marina'"
+- "No problem! What area interests you?"
+
+Keep it under 50 words and conversational."""
+
             response = await self.openai.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=messages,
+                messages=[{"role": "user", "content": conversation_prompt}],
                 temperature=0.7,
-                max_tokens=300
+                max_tokens=100
             )
             
             return response.choices[0].message.content
             
         except Exception as e:
             logger.error(f"Conversation agent failed: {str(e)}")
-            return "Hello! I'm here to help you with Dubai real estate. How can I assist you today? 🏠"
+            return self.formatter.format_error()
 
 
 class PropertySearchAgent:
@@ -263,6 +243,9 @@ class PropertySearchAgent:
     def __init__(self, openai_client: AsyncOpenAI, advanced_property_agent: AdvancedPropertySearchAgent):
         self.openai = openai_client
         self.advanced_property_agent = advanced_property_agent
+        # Import here to avoid circular imports
+        from utils.whatsapp_formatter import whatsapp_formatter
+        self.formatter = whatsapp_formatter
     
     async def handle_message(self, message: str, session: ConversationSession) -> str:
         """
@@ -301,67 +284,48 @@ class PropertySearchAgent:
             if hasattr(search_result, 'requires_clarification') and search_result.requires_clarification:
                 return search_result.clarification_message
             
-            # Check if we should send carousel for large result sets
+            # SIMPLE RULE: If 7+ properties found → ALWAYS send carousel
             if search_result.context and len(search_result.context) >= 7:
                 from tools.whatsapp_carousel_tool import carousel_tool
                 
-                logger.info(f"🎠 CAROUSEL_CHECK: Found {len(search_result.context)} properties, checking if suitable for carousel")
+                logger.info(f"🎠 AUTO_CAROUSEL: {len(search_result.context)} properties found (>=7), sending carousel")
                 
-                # Check if query is suitable for carousel
-                if carousel_tool.should_send_carousel(message, len(search_result.context)):
-                    logger.info(f"🎠 CAROUSEL_SUITABLE: Query '{message[:30]}...' is suitable for carousel")
-                    
-                    # Extract original property IDs
-                    property_ids = []
-                    for prop in search_result.context:
-                        if hasattr(prop, 'original_property_id') and prop.original_property_id:
-                            property_ids.append(str(prop.original_property_id))
-                    
-                    logger.info(f"🎠 CAROUSEL_IDS: Extracted {len(property_ids)} original property IDs")
-                    
-                    # Only send carousel if we have enough original property IDs
-                    if len(property_ids) >= 7:
-                        try:
-                            logger.info(f"🎠 CAROUSEL_ATTEMPT: Sending carousel with {len(property_ids)} properties")
-                            
-                            # Send carousel broadcast
-                            carousel_result = await carousel_tool.send_property_carousel(
-                                session.user_id,  # Assuming user_id is the phone number
-                                property_ids,
-                                max_properties=10
-                            )
-                            
-                            if carousel_result['success']:
-                                logger.info(f"🎠 CAROUSEL_SENT: {carousel_result['property_count']} properties to {session.user_id}")
-                                # Return simple one-line response
-                                property_count = carousel_result['property_count']
-                                return f"🏠 Here are {property_count} properties that match your search! I've sent you property cards with all the details."
-                            else:
-                                logger.error(f"❌ CAROUSEL_FAILED: {carousel_result['message']}")
-                                # Fall back to text response
-                                return search_result.answer
-                        except Exception as carousel_error:
-                            logger.error(f"❌ CAROUSEL_ERROR: {str(carousel_error)}")
-                            # Fall back to text response
-                            return search_result.answer
-                    else:
-                        logger.info(f"🎠 CAROUSEL_SKIP: Not enough property IDs ({len(property_ids)}/7)")
-                        return search_result.answer
-                else:
-                    logger.info(f"🎠 CAROUSEL_SKIP: Query not suitable for carousel")
-                    return search_result.answer
-            else:
-                if search_result.context:
-                    logger.info(f"🎠 CAROUSEL_SKIP: Only {len(search_result.context)} properties (< 7 required)")
-                else:
-                    logger.info(f"🎠 CAROUSEL_SKIP: No properties found")
+                # Extract property IDs
+                property_ids = []
+                for prop in search_result.context:
+                    if hasattr(prop, 'original_property_id') and prop.original_property_id:
+                        property_ids.append(str(prop.original_property_id))
+                    elif hasattr(prop, 'id') and prop.id:
+                        property_ids.append(str(prop.id))
+                
+                if len(property_ids) >= 7:
+                    try:
+                        # Send carousel
+                        carousel_result = await carousel_tool.send_property_carousel(
+                            session.user_id,
+                            property_ids,
+                            max_properties=10
+                        )
+                        
+                        if carousel_result['success']:
+                            logger.info(f"✅ CAROUSEL_SENT: {carousel_result['property_count']} properties")
+                            # Simple 1-line response
+                            return self.formatter.format_carousel_sent_response(carousel_result['property_count'])
+                        else:
+                            logger.error(f"❌ Carousel failed: {carousel_result['message']}")
+                            # Continue to text response as fallback
+                    except Exception as e:
+                        logger.error(f"❌ Carousel error: {str(e)}")
+                        # Continue to text response as fallback
+            
+            # For <7 properties or carousel failure, use normal text response
             
             # Return the generated answer directly from the advanced agent
             return search_result.answer
             
         except Exception as e:
             logger.error(f"Property search agent failed: {str(e)}")
-            return "I'm sorry, I couldn't search for properties right now. Please try again."
+            return self.formatter.format_error("property search")
     
     def _generate_no_results_response(self, query: str, params: Dict[str, Any]) -> str:
         """
@@ -476,7 +440,42 @@ class StatisticsAgent:
             
             search_result = await self.advanced_property_agent.process_query(message, user_context)
             
-            # The advanced agent handles statistical queries internally
+            # SIMPLE RULE: If 7+ properties found → ALWAYS send carousel
+            if search_result.context and len(search_result.context) >= 7:
+                from tools.whatsapp_carousel_tool import carousel_tool
+                from utils.whatsapp_formatter import whatsapp_formatter
+                
+                logger.info(f"🎠 STATS_AUTO_CAROUSEL: {len(search_result.context)} properties found (>=7), sending carousel")
+                
+                # Extract property IDs
+                property_ids = []
+                for prop in search_result.context:
+                    if hasattr(prop, 'original_property_id') and prop.original_property_id:
+                        property_ids.append(str(prop.original_property_id))
+                    elif hasattr(prop, 'id') and prop.id:
+                        property_ids.append(str(prop.id))
+                
+                if len(property_ids) >= 7:
+                    try:
+                        # Send carousel
+                        carousel_result = await carousel_tool.send_property_carousel(
+                            session.user_id,
+                            property_ids,
+                            max_properties=10
+                        )
+                        
+                        if carousel_result['success']:
+                            logger.info(f"✅ STATS_CAROUSEL_SENT: {carousel_result['property_count']} properties")
+                            # Simple 1-line response
+                            return whatsapp_formatter.format_carousel_sent_response(carousel_result['property_count'])
+                        else:
+                            logger.error(f"❌ Stats carousel failed: {carousel_result['message']}")
+                            # Continue to text response as fallback
+                    except Exception as e:
+                        logger.error(f"❌ Stats carousel error: {str(e)}")
+                        # Continue to text response as fallback
+            
+            # For <7 properties or carousel failure, use normal text response
             return search_result.answer
             
         except Exception as e:

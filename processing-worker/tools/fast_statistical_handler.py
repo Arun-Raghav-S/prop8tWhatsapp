@@ -579,68 +579,16 @@ Response:"""
 
     def generate_fast_response(self, results: List[Dict], query_type: str, execution_time: float, sale_or_rent: str = 'sale') -> str:
         """
-        Generate templated response for AI-classified statistical queries
-        NOW TRULY AGENTIC - shows sale vs rent results appropriately
+        Generate WhatsApp-optimized response for statistical queries
         """
+        # Import here to avoid circular imports
+        from utils.whatsapp_formatter import whatsapp_formatter
+        
         if not results:
-            return f"I couldn't find any properties {('for rent' if sale_or_rent == 'rent' else 'for sale')} in our database at the moment. Please try again later or contact support if this issue persists."
+            return whatsapp_formatter.format_no_results(f"{query_type} properties {sale_or_rent}")
         
         property_data = results[0]
-        
-        # INTELLIGENT: Use the appropriate price based on sale_or_rent
-        if sale_or_rent == 'rent':
-            price = property_data.get('rent_price_aed', 0)
-            price_text = f"AED {price:,}/year" if price else "Price on request"
-            transaction_type = "FOR RENT"
-        else:
-            price = property_data.get('sale_price_aed', 0)
-            price_text = f"AED {price:,}" if price else "Price on request"
-            transaction_type = "FOR SALE"
-        
-        # Enhanced response generation based on intent
-        if query_type == 'cheapest':
-            return f"🏠 **CHEAPEST PROPERTY {transaction_type}** ({execution_time:.0f}ms)\n\n" \
-                   f"💰 **Price**: {price_text}\n" \
-                   f"🏢 **Type**: {property_data.get('property_type', 'Property')}\n" \
-                   f"🛏️ **Bedrooms**: {property_data.get('bedrooms', 'N/A')}\n" \
-                   f"📐 **Size**: {property_data.get('bua_sqft', 'N/A')} sqft\n" \
-                   f"📍 **Location**: {self._format_location(property_data.get('address'))}\n\n" \
-                   f"🤖 *AI-powered {sale_or_rent} search in {execution_time:.0f}ms*"
-        
-        elif query_type == 'most_expensive':
-            return f"💎 **MOST EXPENSIVE PROPERTY {transaction_type}** ({execution_time:.0f}ms)\n\n" \
-                   f"💰 **Price**: {price_text}\n" \
-                   f"🏢 **Type**: {property_data.get('property_type', 'Property')}\n" \
-                   f"🛏️ **Bedrooms**: {property_data.get('bedrooms', 'N/A')}\n" \
-                   f"📐 **Size**: {property_data.get('bua_sqft', 'N/A')} sqft\n" \
-                   f"📍 **Location**: {self._format_location(property_data.get('address'))}\n\n" \
-                   f"✨ *Premium {sale_or_rent} property found with AI in {execution_time:.0f}ms*"
-        
-        elif query_type == 'largest':
-            size = property_data.get('bua_sqft', 0)
-            return f"🏰 **LARGEST PROPERTY {transaction_type}** ({execution_time:.0f}ms)\n\n" \
-                   f"📐 **Size**: {size:,} sqft\n" \
-                   f"🏢 **Type**: {property_data.get('property_type', 'Property')}\n" \
-                   f"🛏️ **Bedrooms**: {property_data.get('bedrooms', 'N/A')}\n" \
-                   f"💰 **Price**: {price_text}\n" \
-                   f"📍 **Location**: {self._format_location(property_data.get('address'))}\n\n" \
-                   f"📏 *Spacious {sale_or_rent} property found with AI in {execution_time:.0f}ms*"
-        
-        elif query_type == 'smallest':
-            size = property_data.get('bua_sqft', 0)
-            return f"🏠 **SMALLEST PROPERTY {transaction_type}** ({execution_time:.0f}ms)\n\n" \
-                   f"📐 **Size**: {size:,} sqft\n" \
-                   f"🏢 **Type**: {property_data.get('property_type', 'Property')}\n" \
-                   f"🛏️ **Bedrooms**: {property_data.get('bedrooms', 'N/A')}\n" \
-                   f"💰 **Price**: {price_text}\n" \
-                   f"📍 **Location**: {self._format_location(property_data.get('address'))}\n\n" \
-                   f"🎯 *Compact {sale_or_rent} property found with AI in {execution_time:.0f}ms*"
-        
-        else:
-            return f"✅ **STATISTICAL QUERY COMPLETED** ({execution_time:.0f}ms)\n\n" \
-                   f"🏢 **Property**: {property_data.get('property_type', 'N/A')} {transaction_type}\n" \
-                   f"📍 **Location**: {self._format_location(property_data.get('address'))}\n\n" \
-                   f"🤖 *AI-powered {sale_or_rent} result in {execution_time:.0f}ms*"
+        return whatsapp_formatter.format_statistical_result(query_type, property_data, execution_time)
     
     def _format_location(self, address: Optional[Dict]) -> str:
         """Format address for display"""

@@ -50,10 +50,13 @@ class PropertyLocationTool:
                 "nearby_landmarks": self._get_nearby_landmarks(address.get('locality', ''))
             }
             
-            # Generate natural response
-            response = await self._generate_location_response(location_info)
-            
-            return response
+            # Generate WhatsApp-optimized location response
+            from utils.whatsapp_formatter import whatsapp_formatter
+            property_data_formatted = {
+                'building_name': building_name,
+                'address': address
+            }
+            return whatsapp_formatter.format_location_info(property_data_formatted)
             
         except Exception as e:
             logger.error(f"Location tool failed: {str(e)}")
@@ -224,33 +227,8 @@ Return only valid JSON.
             # In a real implementation, this would make an API call to the booking system
             # For now, we'll create a comprehensive confirmation
             
-            confirmation_response = f"""✅ **Visit Scheduled Successfully!**
-
-🎫 **Booking Reference:** {booking_ref}
-
-🏢 **Property Details:**
-   • **Name:** {property_info.get('building_name', 'Property')}
-   • **Location:** {property_info.get('locality', 'Dubai')}
-   • **Type:** {property_info.get('property_type', 'Property')}
-
-📅 **Visit Details:**
-   • **Date:** {booking_data.get('date_text', visit_date)}
-   • **Time:** {booking_data.get('time_text', visit_time)}
-
-📋 **What happens next:**
-1. **Confirmation Call:** Our team will call you within 2 hours to confirm details
-2. **Agent Assignment:** You'll get your viewing agent's contact info
-3. **Meeting Point:** Exact location and parking details will be shared
-4. **Property Tour:** Professional guided viewing with all amenities
-
-📱 **Important:**
-   • Keep this booking reference: **{booking_ref}**
-   • If you need to reschedule, reply with your reference number
-   • Arrive 5 minutes early for the best experience
-
-Anything else you'd like to know about this property? 🏠✨"""
-
-            return confirmation_response
+            from utils.whatsapp_formatter import whatsapp_formatter
+            return whatsapp_formatter.format_followup_booking(property_id, booking_ref)
             
         except Exception as e:
             logger.error(f"Visit scheduling failed: {str(e)}")

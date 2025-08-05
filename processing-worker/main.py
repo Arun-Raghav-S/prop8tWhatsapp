@@ -201,7 +201,8 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
                     logger.error(f"❌ AGENT_ERROR: {str(e)}")
                     
                     # Send error response
-                    error_response = "Sorry, I encountered an error processing your request. Please try again."
+                    from utils.whatsapp_formatter import whatsapp_formatter
+                    error_response = whatsapp_formatter.format_error()
                     await send_message_via_aisensy(
                         to_phone=user_number,
                         message=error_response,

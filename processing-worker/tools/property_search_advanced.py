@@ -200,20 +200,18 @@ class AdvancedPropertySearchAgent:
             if self._should_use_fast_engine(normalized_query):
                 logger.info("🚀 Using ULTRA-FAST search engine (no AI needed)")
                 
-                # Extract sale_or_rent from query
-                sale_or_rent = None
-                if 'rent' in normalized_query.lower():
-                    sale_or_rent = 'rent'
-                elif 'buy' in normalized_query.lower() or 'sale' in normalized_query.lower():
-                    sale_or_rent = 'sale'
+                # For ultra-fast search, don't restrict by sale_or_rent for general queries
+                # This ensures we get results even if there are no properties of the requested type
+                sale_or_rent = None  # Always search all properties for maximum results
                 
-                # Get ultra-fast response
-                fast_response = await ultra_fast_property_search(normalized_query, sale_or_rent, 5)
+                # Get ultra-fast response and properties for carousel
+                from tools.performance_optimized_search import ultra_fast_property_search_with_context
+                fast_response, fast_properties = await ultra_fast_property_search_with_context(normalized_query, sale_or_rent, self.config["default_limit"])
                 
-                # Return as AgentResponse
+                # Return as AgentResponse with context for carousel logic
                 return AgentResponse(
                     answer=fast_response,
-                    context=[],  # No need for detailed context in fast mode
+                    context=fast_properties,  # Include properties for carousel check
                     extracted_params=QueryParams(query_text=normalized_query),
                     execution_time=(time.time() - start_time),
                     industrial_features={'ultra_fast_engine': True, 'ai_free': True}
@@ -241,14 +239,20 @@ class AdvancedPropertySearchAgent:
         """
         query_lower = query.lower().strip()
         
-        # Fast engine patterns (comprehensive list)
+        # Fast engine patterns (comprehensive list) - EXPANDED for better performance
         fast_patterns = [
             'properties to rent', 'properties to buy', 'rental properties',
             'top properties', 'best properties', 'cheapest', 'affordable',
             'luxury', 'premium', 'properties with', 'show me properties',
             'find properties', 'give me properties', 'top 4 properties',
             'top 5 properties', 'your top', 'me your top', 'properteis',
-            'property to rent', 'property to buy', 'rent properties'
+            'property to rent', 'property to buy', 'rent properties',
+            # PERFORMANCE BOOST: Add more common patterns to trigger fast path
+            'what properties', 'other properties', 'more properties', 'properties',
+            'apartments', 'villas', 'townhouses', 'penthouses', 'plots',
+            'show me', 'find me', 'list properties', 'available properties',
+            'properties for sale', 'properties for rent', 'buy properties',
+            'rent a property', 'property search', 'property listings'
         ]
         
         return any(pattern in query_lower for pattern in fast_patterns)
@@ -299,14 +303,7 @@ class AdvancedPropertySearchAgent:
             industrial_features=industrial_features
         )
         
-        # STEP 5: Cache the response (with error handling)
-        try:
-            if cache_key:
-                response_cache.set(cache_key, response.dict())
-            else:
-                logger.info("🎠 CACHE_SKIP: No cache key available (likely carousel query)")
-        except Exception as e:
-            logger.warning(f"Failed to cache response: {e}")
+        # STEP 5: Response ready (caching disabled for property searches to ensure fresh results)
         
         return response
 
@@ -314,7 +311,7 @@ class AdvancedPropertySearchAgent:
         """Process query using template response for speed"""
         # Quick database query for basic property data
         try:
-            result = self.supabase.table('property_vectorstore').select('*').limit(5).execute()
+            result = self.supabase.table('property_vectorstore').select('*').limit(self.config["default_limit"]).execute()
             search_results = [PropertyResult(**row) for row in result.data]
             
             # Generate template context
@@ -357,8 +354,7 @@ class AdvancedPropertySearchAgent:
             formatted += f"**{i+1}. {prop.property_type or 'Property'} in {locality}**\n"
             formatted += f"📍 **Location:** {prop.building_name or 'Premium Location'}\n"
             formatted += f"💰 **Price:** {price}\n"
-            formatted += f"📐 **Size:** {prop.bua_sqft or 0} sqft\n"
-            formatted += f"🔍 **Reference:** {prop.id[:8]}...\n\n"
+            formatted += f"📐 **Size:** {prop.bua_sqft or 0} sqft\n\n"
         
         return formatted
 
@@ -366,7 +362,7 @@ class AdvancedPropertySearchAgent:
         """Fallback to basic processing if template fails"""
         # Minimal processing for emergency cases
         try:
-            result = self.supabase.table('property_vectorstore').select('*').limit(3).execute()
+            result = self.supabase.table('property_vectorstore').select('*').limit(self.config["default_limit"]).execute()
             search_results = [PropertyResult(**row) for row in result.data]
             
             answer = "🏠 I found some properties for you. Let me get more details..."
@@ -395,6 +391,21 @@ class AdvancedPropertySearchAgent:
         Industrial-grade query synthesis - exact match to TypeScript
         """
         logger.info("🔍 Step 1: Industrial-Grade Query Synthesis")
+        
+        # PERFORMANCE OPTIMIZATION: Cache common query patterns to avoid AI calls
+        query_lower = user_query.lower().strip()
+        
+        # Fast synthesis for common patterns (no AI needed)
+        if 'cheapest' in query_lower and 'properties' in query_lower:
+            return QueryParams(query_text="cheapest properties", sort_by="price_asc", match_count=10)
+        elif 'best' in query_lower and 'properties' in query_lower:
+            return QueryParams(query_text="best properties", sort_by="price_desc", match_count=10)
+        elif query_lower in ['properties', 'show me properties', 'what properties', 'other properties']:
+            return QueryParams(query_text="properties", match_count=10)
+        elif 'apartments' in query_lower:
+            return QueryParams(query_text="apartments", property_type="Apartment", match_count=10)
+        elif 'villas' in query_lower:
+            return QueryParams(query_text="villas", property_type="Villa", match_count=10)
 
         query_parsing_prompt = {
             "role": "system",
@@ -526,7 +537,7 @@ Return only the JSON object, no additional text."""
             query_embedding = None
             
             # Skip embedding generation for very generic queries to save time
-            simple_queries = ['properties', 'property', 'show me', 'find me', '']
+            simple_queries = ['show me', 'find me', '']  # Removed 'properties' and 'property' 
             if query_text.strip() and query_text.lower().strip() not in simple_queries:
                 query_embedding = await self.generate_embedding(query_text)
                 if query_text.strip():
@@ -561,6 +572,14 @@ Return only the JSON object, no additional text."""
                 'good properties', 'top', 'most affordable', 'tell me'
             ]
             
+            # Check for "other properties" or "more properties" type queries
+            other_properties_keywords = [
+                'other properties', 'more properties', 'different properties', 'additional properties',
+                'what other', 'show other', 'any other', 'more options', 'different options'
+            ]
+            
+            is_other_properties_query = any(keyword in normalized_query.lower() for keyword in other_properties_keywords)
+            
             # Check query_text, extracted_params.query_text AND original normalized_query for general keywords
             is_general_query = (
                 any(keyword in query_text.lower() for keyword in general_query_keywords) or
@@ -577,6 +596,19 @@ Return only the JSON object, no additional text."""
                     logger.info(f"🎠 CAROUSEL_LOGIC: No sale_or_rent specified, will search both sale and rent for maximum results")
             else:
                 match_count = base_match_count
+                
+            # Handle "other properties" queries with different sorting/offset
+            search_offset = 0
+            if is_other_properties_query:
+                # Use random offset to get different results
+                import random
+                search_offset = random.randint(5, 15)  # Skip 5-15 results to get different properties
+                logger.info(f"🔄 OTHER_PROPERTIES: Using offset {search_offset} to return different results")
+                
+                # Also increase match count to ensure enough results
+                if match_count < 15:
+                    match_count = 15
+                    logger.info(f"🔄 OTHER_PROPERTIES: Increased match_count to {match_count} for variety")
                 
             intelligent_limit = extracted_params.intelligent_limit if extracted_params.intelligent_limit is not None else True
             
@@ -598,16 +630,17 @@ Return only the JSON object, no additional text."""
                 else [None]
             )
 
-            # For general queries without sale_or_rent, search both to maximize carousel results
+            # For general queries, always search ALL properties to maximize results
             sale_or_rent_values = []
-            if extracted_params.sale_or_rent:
+            if extracted_params.sale_or_rent and not is_general_query:
+                # Only restrict sale_or_rent for specific queries, not general ones
                 sale_or_rent_values = [extracted_params.sale_or_rent]
             elif is_general_query:
-                # Search both sale and rent for general queries to get more results for carousel
-                sale_or_rent_values = ['sale', 'rent']
-                logger.info(f"🎠 CAROUSEL_LOGIC: Searching both sale and rent for general query")
+                # For general queries, search ALL properties regardless of sale_or_rent
+                sale_or_rent_values = [None]  # None means search all
+                logger.info(f"🎠 CAROUSEL_LOGIC: Searching ALL properties for general query to maximize results")
             else:
-                sale_or_rent_values = [None]  # Let database decide
+                sale_or_rent_values = [extracted_params.sale_or_rent] if extracted_params.sale_or_rent else [None]
 
             # Execute searches for all combinations
             for property_type in property_types:
@@ -701,6 +734,10 @@ Return only the JSON object, no additional text."""
                             search_params["p_query_type"] = extracted_params.query_type
                         if intelligent_limit:
                             search_params["p_intelligent_limit"] = intelligent_limit
+                        
+                        # Add offset for "other properties" queries
+                        if search_offset > 0:
+                            search_params["p_offset"] = search_offset
 
                         # Search parameters configured
 
@@ -796,149 +833,39 @@ Return only the JSON object, no additional text."""
 
     async def generate_answer(self, user_query: str, extracted_params: QueryParams, search_results: List[PropertyResult], industrial_features: Dict[str, bool]) -> str:
         """
-        Industrial-grade answer generation - exact match to TypeScript
+        Professional answer generation with performance optimization
         """
-        logger.info("💬 Step 3: Industrial-Grade Answer Generation")
+        logger.info("💬 Step 3: Professional Answer Generation")
         
         if not search_results:
             return self.generate_no_results_response(extracted_params, user_query, industrial_features)
+        
+        # PERFORMANCE OPTIMIZATION: Use WhatsApp formatter for all responses (no AI needed)
+        logger.info("⚡ Using WhatsApp formatter (no AI needed)")
+        from utils.whatsapp_formatter import whatsapp_formatter
+        
+        # Convert PropertyResult objects to dictionaries
+        properties_dict = []
+        for prop in search_results:
+            if hasattr(prop, 'dict'):
+                properties_dict.append(prop.dict())
+            else:
+                properties_dict.append(dict(prop))
+        
+        # Use WhatsApp formatter based on result count
+        if len(properties_dict) == 1:
+            return whatsapp_formatter.format_single_property(properties_dict[0], user_query)
+        else:
+            return whatsapp_formatter.format_property_list(properties_dict, user_query, len(search_results))
 
-        system_prompt = f"""You are an expert Dubai real estate consultant with INDUSTRIAL-GRADE capabilities. Generate a beautifully formatted, conversational response about the property search results.
 
-🏭 INDUSTRIAL FEATURES USED:
-- Negative Filtering: {'✅' if industrial_features['negative_filtering'] else '❌'}
-- Advanced Sorting: {'✅' if industrial_features['sorting'] else '❌'}  
-- Statistical Query: {'✅' if industrial_features['statistical_query'] else '❌'}
-- Intelligent Limits: {'✅' if industrial_features['intelligent_limits'] else '❌'}
-- Multi-Criteria Sorting: {'✅' if industrial_features['multi_criteria_sorting'] else '❌'}
-
-📊 RESPONSE FORMATTING REQUIREMENTS:
-- Start with an engaging summary (e.g., "🏠 **Found {len(search_results)} amazing properties for you!**")
-- Use emojis for visual appeal (🏠 🏢 🏖️ 💰 📍 ✨ 🔍)
-- Format prices clearly: "AED 2.5M" for sales, "AED 85,000/year" for rentals
-- Group similar properties when showing multiple results
-- Use bullet points or numbered lists for easy reading
-- Add line breaks for better WhatsApp readability
-- End with helpful next steps
-
-📈 STATISTICAL QUERY HANDLING:
-- For "average price" queries: Show clear statistics with context
-- For "cheapest/most expensive" queries: Highlight the standout property
-- For "largest/smallest" queries: Emphasize size and value proposition
-- Always provide market insights and comparisons
-
-🎯 FORMATTING GUIDELINES:
-- Use **bold** for important information
-- Keep lines short for mobile WhatsApp viewing
-- Add spacing between property listings
-- Mention industrial features used subtly
-- Include practical next steps
-- Be enthusiastic but professional
-- Suggest refined searches when appropriate
-
-User's original query: "{user_query}"
-Search parameters: {json.dumps(extracted_params.dict(), indent=2)}
-Found {len(search_results)} total properties."""
-
-        results_text = ""
-        for index, prop in enumerate(search_results[:10]):
-            price = (f"AED {(prop.sale_price_aed / 1000000):.1f}M" if prop.sale_price_aed 
-                    else f"AED {prop.rent_price_aed:,}/year" if prop.rent_price_aed
-                    else "Price on request")
-            
-            features = []
-            if prop.study:
-                features.append('Study')
-            if prop.maid_room:
-                features.append('Maid room')
-            if prop.park_pool_view:
-                features.append('Pool/Park view')
-            if prop.landscaped_garden:
-                features.append('Garden')
-            if prop.covered_parking:
-                features.append(f'{prop.covered_parking} parking')
-            
-            locality = prop.address.get('locality') if prop.address else None
-            city = prop.address.get('city') if prop.address else None
-            location = locality or city or 'Location not specified'
-            building = f" ({prop.building_name})" if prop.building_name else ""
-            
-            results_text += f"""**{index + 1}. {prop.property_type}** | {prop.bedrooms}BR • {prop.bathrooms}BA
-📍 {location}{building}
-💰 {price}
-📐 {prop.bua_sqft} sqft{chr(10) + '✨ ' + ', '.join(features) if features else ''}
-🔍 Ref: {prop.id[:8]}...
-
-"""
-
-        try:
-            completion = await self.openai.chat.completions.create(
-                model=self.config["model"],
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Here are the search results:\n\n{results_text}\n\nPlease provide a helpful response highlighting the industrial features used."}
-                ],
-                temperature=0.7,
-                max_tokens=1000
-            )
-
-            answer = completion.choices[0].message.content or "I found some properties but encountered an issue generating the response."
-            logger.info("✅ Industrial-grade answer generated")
-            return answer
-            
-        except Exception as e:
-            logger.error(f"❌ Answer generation failed: {str(e)}")
-            return self.generate_fallback_response(search_results, industrial_features)
 
     def generate_no_results_response(self, search_params: QueryParams, original_query: str, industrial_features: Dict[str, bool]) -> str:
         """
-        Generate no results response - exact match to TypeScript
+        Generate WhatsApp-optimized no results response
         """
-        criteria = []
-        if search_params.property_type:
-            prop_type = search_params.property_type
-            if isinstance(prop_type, list):
-                criteria.append(' or '.join(prop_type).lower())
-            else:
-                criteria.append(prop_type.lower())
-        if search_params.bedrooms:
-            criteria.append(f"{search_params.bedrooms} bedroom{'s' if search_params.bedrooms > 1 else ''}")
-        if search_params.sale_or_rent:
-            criteria.append(f"for {search_params.sale_or_rent}")
-        if search_params.locality:
-            locality = search_params.locality
-            if isinstance(locality, list):
-                criteria.append(f"in {' or '.join(locality)}")
-            else:
-                criteria.append(f"in {locality}")
-        
-        # Add negative criteria
-        negative_criteria = []
-        if search_params.no_maid_room:
-            negative_criteria.append('WITHOUT maid room')
-        if search_params.no_study:
-            negative_criteria.append('WITHOUT study')
-        if search_params.no_landscaped_garden:
-            negative_criteria.append('WITHOUT garden')
-
-        criteria_text = f" matching \"{', '.join(criteria)}\"" if criteria else ''
-        negative_text = f" ({', '.join(negative_criteria)})" if negative_criteria else ''
-
-        return f"""I couldn't find any properties{criteria_text}{negative_text} in our database. 
-
-🏭 **Industrial Search Used:**
-- Negative Filtering: {'✅ Active' if industrial_features['negative_filtering'] else '❌ Not used'}
-- Advanced Sorting: {'✅ ' + search_params.sort_by if industrial_features['sorting'] and search_params.sort_by else '❌ Not used'}
-- Multi-Criteria Sorting: {'✅ Active' if industrial_features['multi_criteria_sorting'] else '❌ Not used'}
-- Statistical Query: {'✅ Active' if industrial_features['statistical_query'] else '❌ Not used'}
-
-**Suggestions:**
-• Try broadening your search criteria
-• Remove specific negative filters (e.g., allow maid rooms)
-• Check location spelling
-• Consider nearby communities
-
-Would you like me to search with different criteria?"""
+        from utils.whatsapp_formatter import whatsapp_formatter
+        return whatsapp_formatter.format_no_results(original_query)
 
     def generate_fallback_response(self, search_results: List[PropertyResult], industrial_features: Dict[str, bool]) -> str:
         """

@@ -85,27 +85,19 @@ class ResponseCache:
         """Determine if we can use a template response"""
         query_lower = query.lower().strip()
         
-        # DISABLE templates for carousel-suitable queries
-        carousel_keywords = [
-            'what all properties', 'cheapest', 'top', 'best', 'tell me', 
-            'all properties', 'available properties', 'show me all'
+        # DISABLE templates for ALL property search queries to ensure full pipeline
+        property_search_keywords = [
+            'properties', 'property', 'show me', 'find me', 'tell me', 'search',
+            'cheapest', 'top', 'best', 'all properties', 'available properties',
+            'what properties', 'other properties', 'more properties', 'apartments',
+            'villas', 'townhouses', 'penthouses', 'plots', 'br', 'bedroom',
+            'marina', 'downtown', 'jbr', 'dubai', 'rent', 'sale', 'buy'
         ]
         
-        # If query is suitable for carousel, don't use template - go through full pipeline
-        if any(keyword in query_lower for keyword in carousel_keywords):
-            logger.info(f"🎠 TEMPLATE_DISABLED: Carousel-suitable query, using full pipeline")
+        # If query contains property search keywords, don't use template - go through full pipeline
+        if any(keyword in query_lower for keyword in property_search_keywords):
+            logger.info(f"🎠 TEMPLATE_DISABLED: Property search query detected, using full pipeline")
             return None
-        
-        # Generic property requests (only very basic ones)
-        generic_patterns = [
-            'properties', 'show me', 'find me',  # Removed patterns that could trigger carousel
-            'property options'
-        ]
-        
-        if any(pattern in query_lower for pattern in generic_patterns):
-            # But still check if this might be a carousel query
-            if not any(keyword in query_lower for keyword in carousel_keywords):
-                return 'generic_properties'
         
         # Booking confirmations
         booking_patterns = ['book', 'schedule', 'visit', 'viewing', 'appointment']

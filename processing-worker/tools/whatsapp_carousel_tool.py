@@ -92,80 +92,18 @@ class WhatsAppCarouselTool:
                 'sent_carousel': False
             }
     
-    def should_send_carousel(self, 
-                           query: str, 
-                           property_count: int, 
-                           min_properties: int = 7) -> bool:
+    def should_send_carousel(self, property_count: int, min_properties: int = 7) -> bool:
         """
-        Determine if carousel should be sent based on query type and property count
+        SIMPLE RULE: Send carousel if we have enough properties
         
         Args:
-            query: User's search query
             property_count: Number of properties found
-            min_properties: Minimum properties needed for carousel
+            min_properties: Minimum properties needed for carousel (default 7)
             
         Returns:
             bool: True if carousel should be sent
         """
-        if property_count < min_properties:
-            return False
-        
-        # Convert query to lowercase for analysis
-        query_lower = query.lower().strip()
-        
-        # General property queries that should use carousel
-        general_queries = [
-            'properties', 'property', 'show me properties', 'what properties do you have',
-            'all properties', 'list properties', 'available properties',
-            'cheapest properties', 'cheapest property', 'most affordable',
-            'best properties', 'good properties', 'nice properties',
-            'new properties', 'latest properties',
-            'properties for sale', 'properties for rent',
-            'villas', 'apartments', 'townhouses'
-        ]
-        
-        # Keywords that indicate general searches
-        general_keywords = [
-            'cheapest', 'most affordable', 'best value', 'good deal',
-            'all', 'show me', 'list', 'available', 'what do you have',
-            'properties in', 'any properties'
-        ]
-        
-        # Specific descriptive queries that should NOT use carousel
-        descriptive_keywords = [
-            'amenities', 'features', 'swimming pool', 'gym', 'facilities',
-            'balcony', 'view', 'terrace', 'garden', 'parking',
-            'what is', 'tell me about', 'describe', 'details about',
-            'furnished', 'unfurnished', 'utilities included',
-            'near', 'close to', 'walking distance'
-        ]
-        
-        # Check if query contains descriptive keywords (should NOT use carousel)
-        for keyword in descriptive_keywords:
-            if keyword in query_lower:
-                logger.info(f"🔍 Descriptive query detected ('{keyword}'): not using carousel")
-                return False
-        
-        # Check if query matches general patterns (should use carousel)
-        for general_query in general_queries:
-            if general_query in query_lower:
-                logger.info(f"🎠 General query detected ('{general_query}'): using carousel")
-                return True
-        
-        # Check for general keywords
-        for keyword in general_keywords:
-            if keyword in query_lower:
-                logger.info(f"🎠 General keyword detected ('{keyword}'): using carousel")
-                return True
-        
-        # If query is very short and generic, use carousel
-        if len(query_lower.split()) <= 3:
-            logger.info(f"🎠 Short generic query: using carousel")
-            return True
-        
-        # Default: don't use carousel for complex/specific queries
-        logger.info(f"🔍 Complex/specific query: not using carousel")
-        return False
+        return property_count >= min_properties
 
 
 # Initialize global instance
