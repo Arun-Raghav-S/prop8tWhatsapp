@@ -103,7 +103,7 @@ class SimplePropertySearchAgent:
         """
         try:
             query = self.supabase.from_('property_vectorstore').select(
-                'id, property_type, bedrooms, bathrooms, bua_sqft, '
+                'id, original_property_id, property_type, bedrooms, bathrooms, bua_sqft, '
                 'sale_price_aed, rent_price_aed, sale_or_rent, address, building_name'
             )
             

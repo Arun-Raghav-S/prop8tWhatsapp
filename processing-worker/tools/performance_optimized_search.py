@@ -148,7 +148,7 @@ class PerformanceOptimizedSearch:
         """
         # Only select needed columns for fast transfer
         query = self.supabase.from_('property_vectorstore').select(
-            'id, property_type, sale_or_rent, bedrooms, bathrooms, '
+            'id, original_property_id, property_type, sale_or_rent, bedrooms, bathrooms, '
             'sale_price_aed, rent_price_aed, bua_sqft, address, building_name, '
             'study, maid_room, park_pool_view, landscaped_garden, covered_parking_spaces'
         )
@@ -220,7 +220,7 @@ class PerformanceOptimizedSearch:
         """
         # Only select needed columns for fast transfer
         query = self.supabase.from_('property_vectorstore').select(
-            'id, property_type, sale_or_rent, bedrooms, bathrooms, '
+            'id, original_property_id, property_type, sale_or_rent, bedrooms, bathrooms, '
             'sale_price_aed, rent_price_aed, bua_sqft, address, building_name, '
             'study, maid_room, park_pool_view, landscaped_garden, covered_parking_spaces'
         )
@@ -353,7 +353,7 @@ async def ultra_fast_property_search_with_context(query: str, sale_or_rent: str 
         # Create proper PropertyResult object from raw database data
         prop_obj = PropertyResult(
             id=prop_data['id'],
-            original_property_id=prop_data['id'],
+            original_property_id=prop_data.get('original_property_id'),
             property_type=prop_data['property_type'],
             sale_or_rent=prop_data['sale_or_rent'],
             bedrooms=prop_data['bedrooms'],

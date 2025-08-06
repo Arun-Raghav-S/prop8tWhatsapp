@@ -24,8 +24,8 @@ class Config:
     WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
     
     # Supabase Configuration
-    SUPABASE_URL = os.getenv('NEXT_PUBLIC_SUPABASE_URL')
-    SUPABASE_ANON_KEY = os.getenv('NEXT_PUBLIC_SUPABASE_ANON_KEY')
+    SUPABASE_URL = os.getenv('SUPABASE_URL')
+    SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY')
     SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
     
     # Google Cloud Configuration
@@ -41,6 +41,9 @@ class Config:
     
     # Chat History
     MAX_CHAT_HISTORY_LENGTH = 50
+
+    # Name Collection
+    NAME_COLLECTION_QUESTION_THRESHOLD = 2  # Ask for name after this many questions
     
     # Rate Limiting
     MAX_RETRIES = 3

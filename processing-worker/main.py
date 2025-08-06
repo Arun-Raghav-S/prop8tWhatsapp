@@ -28,6 +28,8 @@ from src.services.messaging import (
     mark_message_as_read,
     is_duplicate_message
 )
+from src.services.agent_history import update_agent_history_async
+from src.services.name_collection import name_collection_service
 from src.utils.pubsub import (
     PubSubMessageProcessor,
     extract_whatsapp_messages,
@@ -50,6 +52,45 @@ session_manager = SessionManager()
 
 # Global pub/sub processor
 pubsub_processor = None
+
+async def _handle_name_extraction_async(user_number: str, message: str, whatsapp_business_account: str):
+    """Handle name extraction in background without blocking conversation"""
+    try:
+        logger.info(f"🔄 [NAME_EXTRACTION] Processing in background for {user_number}")
+        
+        # Try to extract name using LLM
+        extracted_name = await name_collection_service.extract_name_from_message(message)
+        
+        if extracted_name:
+            # Save the name
+            session_manager.save_customer_name(user_number, extracted_name)
+            logger.info(f"💾 [NAME_EXTRACTION] Saved name: {extracted_name} for {user_number}")
+            
+            # Send a follow-up message confirming name was saved
+            confirmation_message = f"Got it! I'll remember your name is {extracted_name}. 😊"
+            await send_message_via_aisensy(
+                to_phone=user_number,
+                message=confirmation_message,
+                whatsapp_business_account=whatsapp_business_account
+            )
+            
+            # Update agent history with the name information
+            customer_name = session_manager.get_customer_name(user_number)
+            org_id = session_manager.get_org_id(user_number)
+            asyncio.create_task(update_agent_history_async(
+                user_message=f"[NAME_PROVIDED: {extracted_name}]",
+                agent_response=confirmation_message,
+                user_number=user_number,
+                whatsapp_business_account=whatsapp_business_account,
+                org_id=org_id,
+                user_name=customer_name
+            ))
+            
+        else:
+            logger.info(f"❌ [NAME_EXTRACTION] No name found in message from {user_number}")
+            
+    except Exception as e:
+        logger.error(f"❌ [NAME_EXTRACTION] Error in background processing: {e}")
 
 @app.get("/")
 async def root():
@@ -173,14 +214,34 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
             
             if user_number and text_message and whatsapp_business_account:
                 try:
-                    # Get or create session for this user
-                    session = session_manager.get_session(user_number)
+                    # Get or create session for this user with database initialization
+                    session = await session_manager.initialize_session_with_user_data(
+                        user_number, whatsapp_business_account
+                    )
                     
-                    # Process through agent system
+                    # Always process through agent system first (normal flow)
                     agent_response = await agent_system.process_message(
                         message=text_message, 
                         session=session
                     )
+                    
+                    # Handle name collection logic asynchronously
+                    if session_manager.is_awaiting_name_response(user_number):
+                        # Try to extract name in background (non-blocking)
+                        asyncio.create_task(_handle_name_extraction_async(
+                            user_number, text_message, whatsapp_business_account
+                        ))
+                    else:
+                        # Increment question count for non-name responses
+                        session_manager.increment_question_count(user_number)
+                        
+                        # Check if we should ask for name (using config threshold)
+                        from src.config import config
+                        if session_manager.should_ask_for_name(user_number, config.NAME_COLLECTION_QUESTION_THRESHOLD):
+                            session_manager.mark_name_collection_asked(user_number)
+                            # Override agent response to ask for name
+                            agent_response = name_collection_service.generate_name_request_message()
+                            logger.info(f"🎯 NAME_REQUEST: Asked {user_number} for name after {session.user_question_count} questions")
                     
                     # Send response via AiSensy
                     success = await send_message_via_aisensy(
@@ -191,6 +252,19 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
                     
                     if success:
                         logger.info(f"📤 RESPONSE_SENT: to {user_number}")
+                        
+                        # Update agent history in background (non-blocking)
+                        customer_name = session_manager.get_customer_name(user_number)
+                        org_id = session_manager.get_org_id(user_number)
+                        asyncio.create_task(update_agent_history_async(
+                            user_message=text_message,
+                            agent_response=agent_response,
+                            user_number=user_number,
+                            whatsapp_business_account=whatsapp_business_account,
+                            org_id=org_id,
+                            user_name=customer_name
+                        ))
+                        logger.info("📊 AGENT_HISTORY: Queued for API sync")
                     else:
                         logger.error(f"❌ SEND_FAILED: to {user_number}")
                     
@@ -219,8 +293,10 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
             
             if user_number and whatsapp_business_account:
                 try:
-                    # Get or create session for this user
-                    session = session_manager.get_session(user_number)
+                    # Get or create session for this user with database initialization
+                    session = await session_manager.initialize_session_with_user_data(
+                        user_number, whatsapp_business_account
+                    )
                     
                     # Create a message based on button click
                     button_message = f"User clicked: {button_text}"
@@ -242,6 +318,19 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
                     
                     if success:
                         logger.info(f"📤 BUTTON_RESPONSE_SENT: to {user_number}")
+                        
+                        # Update agent history in background (non-blocking)
+                        customer_name = session_manager.get_customer_name(user_number)
+                        org_id = session_manager.get_org_id(user_number)
+                        asyncio.create_task(update_agent_history_async(
+                            user_message=button_message,
+                            agent_response=agent_response,
+                            user_number=user_number,
+                            whatsapp_business_account=whatsapp_business_account,
+                            org_id=org_id,
+                            user_name=customer_name
+                        ))
+                        logger.info("📊 AGENT_HISTORY: Queued for API sync (button)")
                     else:
                         logger.error(f"❌ BUTTON_SEND_FAILED: to {user_number}")
                     

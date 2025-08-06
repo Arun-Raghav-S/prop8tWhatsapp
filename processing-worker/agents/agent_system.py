@@ -60,12 +60,12 @@ class WhatsAppAgentSystem:
                 )
                 
                 # Log to session
-                session.add_message("user", message, "fast_path")
-                session.add_message("assistant", response, "fast_path", {
+                session.add_message("user", message, "fast_path", metadata=None, message_type="text")
+                session.add_message("assistant", response, "fast_path", metadata={
                     "execution_time_ms": result['execution_time_ms'],
                     "method": result['method'],
                     "query_type": fast_query_type
-                })
+                }, message_type="text")
                 
                 return response
             
@@ -98,11 +98,11 @@ class WhatsAppAgentSystem:
             processing_time = (time.time() - start_time) * 1000
             
             # Log to session
-            session.add_message("user", message, agent_choice)
-            session.add_message("assistant", response, agent_choice, {
+            session.add_message("user", message, agent_choice, metadata=None, message_type="text")
+            session.add_message("assistant", response, agent_choice, metadata={
                 "processing_time_ms": processing_time,
                 "agent_used": agent_choice
-            })
+            }, message_type="text")
             
             # Update session context
             session.current_agent = agent_choice
@@ -247,16 +247,67 @@ class PropertySearchAgent:
         from utils.whatsapp_formatter import whatsapp_formatter
         self.formatter = whatsapp_formatter
     
+    def _update_clarification_context(self, session: ConversationSession, user_message: str, clarification_type: str):
+        """Update session context to track clarification progress"""
+        # Initialize clarification context if not exists
+        if 'clarification' not in session.context:
+            session.context['clarification'] = {}
+        
+        clarification_context = session.context['clarification']
+        
+        # Track what user is answering
+        message_lower = user_message.lower().strip()
+        
+        if clarification_type == 'buy_rent':
+            # Mark that we've asked the buy/rent question
+            clarification_context['asked_buy_rent'] = True
+            
+            # Check if they're answering with buy/rent info
+            buy_rent_answers = ['buy', 'rent', 'sale', 'rental', 'purchase', 'buying', 'renting']
+            if any(answer in message_lower for answer in buy_rent_answers):
+                clarification_context['answered_buy_rent'] = True
+                
+                # Extract their preference
+                if any(word in message_lower for word in ['buy', 'sale', 'purchase', 'buying']):
+                    clarification_context['preferred_type'] = 'sale'
+                elif any(word in message_lower for word in ['rent', 'rental', 'renting']):
+                    clarification_context['preferred_type'] = 'rent'
+        
+        elif clarification_type == 'property_type':
+            # Mark that we've asked the property type question
+            clarification_context['asked_property_type'] = True
+            
+            # Check if they're answering with property type info
+            property_types = ['villa', 'apartment', 'flat', 'townhouse', 'penthouse', 'studio', 'plot', 'building']
+            if any(ptype in message_lower for ptype in property_types):
+                clarification_context['answered_property_type'] = True
+                
+                # Extract their preference
+                for ptype in property_types:
+                    if ptype in message_lower:
+                        clarification_context['preferred_property_type'] = ptype
+                        break
+        
+        # Update session
+        from utils.session_manager import SessionManager
+        session_manager = SessionManager()
+        session_manager.update_session(session.user_id, session)
+    
     async def handle_message(self, message: str, session: ConversationSession) -> str:
         """
         Handle property search requests using advanced search
         """
         try:
-            # Create user context for the advanced agent
+            # Create user context for the advanced agent, including clarification state
+            clarification_context = session.context.get('clarification', {})
             user_context = {
                 'user_id': session.user_id,
                 'active_properties_count': len(session.context.get('active_properties', [])),
-                'last_search_type': session.current_agent
+                'last_search_type': session.current_agent,
+                'answered_buy_rent': clarification_context.get('answered_buy_rent', False),
+                'answered_property_type': clarification_context.get('answered_property_type', False),
+                'preferred_type': clarification_context.get('preferred_type'),
+                'preferred_property_type': clarification_context.get('preferred_property_type')
             }
             
             # Execute advanced property search with context
@@ -280,8 +331,11 @@ class PropertySearchAgent:
                 
                 logger.info(f"🏠 PROPERTIES_STORED: {len(properties_data)} properties for user {session.user_id}")
             
-            # Handle clarification requests
+            # Handle clarification requests with session tracking
             if hasattr(search_result, 'requires_clarification') and search_result.requires_clarification:
+                # Track clarification state in session
+                clarification_type = search_result.industrial_features.get('clarification_type', 'unknown')
+                self._update_clarification_context(session, message, clarification_type)
                 return search_result.clarification_message
             
             # SIMPLE RULE: If 7+ properties found → ALWAYS send carousel

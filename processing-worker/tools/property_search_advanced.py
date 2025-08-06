@@ -98,6 +98,8 @@ class AgentResponse(BaseModel):
     answer: str
     context: List[PropertyResult]
     extracted_params: QueryParams
+    requires_clarification: Optional[bool] = False
+    clarification_message: Optional[str] = None
     execution_time: float
     debug: Optional[Dict[str, Any]] = None
     industrial_features: Optional[Dict[str, bool]] = None
@@ -156,6 +158,64 @@ class AdvancedPropertySearchAgent:
             "embedding_model": os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
             "default_limit": int(os.getenv("DEFAULT_SEARCH_LIMIT", "10"))
         }
+    
+    def _needs_clarification(self, user_query: str, extracted_params: QueryParams, user_context: Dict = None) -> Dict[str, Any]:
+        """
+        Enhanced clarification logic based on user flowchart:
+        1. First ask buy/rent to cut search space
+        2. Then ask property type (villa, apartment, etc.)
+        3. Show carousel only after clarifying questions for general queries
+        """
+        user_context = user_context or {}
+        query_lower = user_query.lower().strip()
+        
+        # Check if user has answered buy/rent question
+        answered_buy_rent = user_context.get('answered_buy_rent', False)
+        answered_property_type = user_context.get('answered_property_type', False)
+        
+        # Very basic queries that need clarification
+        very_basic_queries = ['properties', 'property', 'show me properties', 'find properties', 'list properties']
+        is_very_basic = query_lower in very_basic_queries or query_lower == 'hi' or query_lower == 'hello'
+        
+        # General queries that could benefit from clarification
+        general_query_keywords = [
+            'properties', 'property', 'show me', 'list', 'all properties', 
+            'what properties', 'available properties', 'good properties', 
+            'tell me about properties', 'find me properties'
+        ]
+        is_general_query = any(keyword in query_lower for keyword in general_query_keywords)
+        
+        # Check if user is answering buy/rent question
+        buy_rent_answers = ['buy', 'rent', 'sale', 'rental', 'purchase', 'buying', 'renting']
+        is_buy_rent_answer = any(answer in query_lower for answer in buy_rent_answers)
+        
+        # Check if user is answering property type question
+        property_types = ['villa', 'apartment', 'flat', 'townhouse', 'penthouse', 'studio', 'plot', 'building']
+        is_property_type_answer = any(ptype in query_lower for ptype in property_types)
+        
+        # Flow logic based on flowchart
+        if is_very_basic and not answered_buy_rent:
+            return {
+                'needs_clarification': True,
+                'clarification_type': 'buy_rent',
+                'message': "Hi there! 👋 Are you looking to **buy** or **rent** a property? This will help me find the best options for you! 🏠"
+            }
+        
+        if is_buy_rent_answer and not answered_property_type:
+            return {
+                'needs_clarification': True,
+                'clarification_type': 'property_type',
+                'message': "Great! What type of property are you interested in? 🏠\n\n• Villa 🏘️\n• Apartment 🏢\n• Townhouse 🏡\n• Penthouse 🌟\n• Studio 📐\n• Plot 🏗️\n\nOr tell me how many bedrooms you need (e.g., '2 beds', '3 bedrooms')!"
+            }
+        
+        if is_general_query and not extracted_params.sale_or_rent and not answered_buy_rent:
+            return {
+                'needs_clarification': True,
+                'clarification_type': 'buy_rent',
+                'message': "I'd be happy to help! Are you looking to **buy** or **rent** a property? This will help me show you the most relevant options. 🏠"
+            }
+            
+        return {'needs_clarification': False}
     
     async def process_query(self, user_query: str, user_context: Dict = None) -> AgentResponse:
         """
@@ -230,8 +290,24 @@ class AdvancedPropertySearchAgent:
         except Exception as e:
             logger.warning(f"Template check failed, using full pipeline: {e}")
 
-        # STEP 5: Full pipeline for complex queries
-        return await self._continue_full_pipeline(normalized_query, start_time)
+        # STEP 5: Check for enhanced clarification needs
+        # Quick synthesis to check if we need clarification
+        quick_params = QueryParams(query_text=normalized_query)
+        clarification_check = self._needs_clarification(normalized_query, quick_params, user_context)
+        
+        if clarification_check['needs_clarification']:
+            return AgentResponse(
+                answer=clarification_check['message'],
+                context=[],
+                extracted_params=quick_params,
+                execution_time=(time.time() - start_time),
+                requires_clarification=True,
+                clarification_message=clarification_check['message'],
+                industrial_features={'enhanced_clarification': True, 'clarification_type': clarification_check['clarification_type']}
+            )
+
+        # STEP 6: Full pipeline for complex queries
+        return await self._continue_full_pipeline(normalized_query, start_time, user_context)
 
     def _should_use_fast_engine(self, query: str) -> bool:
         """
@@ -257,7 +333,7 @@ class AdvancedPropertySearchAgent:
         
         return any(pattern in query_lower for pattern in fast_patterns)
 
-    async def _continue_full_pipeline(self, normalized_query: str, start_time: float) -> AgentResponse:
+    async def _continue_full_pipeline(self, normalized_query: str, start_time: float, user_context: Dict = None) -> AgentResponse:
         """
         Continue with the full pipeline for complex queries
         """
@@ -279,7 +355,9 @@ class AdvancedPropertySearchAgent:
                 context=[],
                 extracted_params=extracted_params,
                 execution_time=(time.time() - start_time),
-                industrial_features=industrial_features
+                industrial_features=industrial_features,
+                requires_clarification=True,
+                clarification_message="I'd be happy to help! Are you looking to **buy** or **rent** a property? This will help me show you the most relevant options. 🏠"
             )
 
         # Answer Generation (optimized)

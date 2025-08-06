@@ -12,8 +12,8 @@ from src.services.auth import get_valid_access_token, refresh_access_token
 logger = logging.getLogger(__name__)
 
 # Configuration for organization metadata API calls
-SUPABASE_ANON_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
-SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL", "https://auth.propzing.com")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://auth.propzing.com")
 TOOLS_EDGE_FUNCTION_URL = os.getenv("NEXT_PUBLIC_TOOLS_EDGE_FUNCTION_URL", 
                                    "https://auth.propzing.com/functions/v1/whatsappagent_tools")
 
@@ -25,7 +25,7 @@ async def fetch_org_metadata_internal(user_number: str, whatsapp_business_accoun
     logger.info(f"[fetch_org_metadata_internal] Fetching metadata for user: {user_number}, whatsapp_business_account: {whatsapp_business_account}")
     
     if not SUPABASE_ANON_KEY:
-        logger.error("[fetch_org_metadata_internal] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY")
+        logger.error("[fetch_org_metadata_internal] Missing SUPABASE_ANON_KEY")
         return {"error": "Server configuration error - missing API key"}
     
     try:

@@ -359,7 +359,7 @@ Response:"""
         sale_or_rent = config.get('sale_or_rent', 'sale')
         
         # Build the base query
-        base_select = ('id, property_type, bedrooms, bathrooms, bua_sqft, '
+        base_select = ('id, original_property_id, property_type, bedrooms, bathrooms, bua_sqft, '
                       'sale_price_aed, rent_price_aed, sale_or_rent, address, building_name, '
                       'study, maid_room, landscaped_garden, park_pool_view, covered_parking_spaces')
         

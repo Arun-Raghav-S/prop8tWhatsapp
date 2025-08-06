@@ -25,6 +25,14 @@ class ConversationSession:
     conversation_history: list = None
     context: Dict[str, Any] = None
     metadata: Dict[str, Any] = None
+    # Name collection tracking
+    user_question_count: int = 0
+    customer_name: str = ""
+    name_collection_asked: bool = False
+    awaiting_name_response: bool = False
+    # Organization metadata
+    org_id: str = ""
+    org_name: str = ""
     
     def __post_init__(self):
         if self.conversation_history is None:
@@ -34,7 +42,7 @@ class ConversationSession:
         if self.metadata is None:
             self.metadata = {}
     
-    def add_message(self, role: str, content: str, agent_name: str, metadata: Dict[str, Any] = None):
+    def add_message(self, role: str, content: str, agent_name: str, metadata: Dict[str, Any] = None, message_type: str = "text"):
         """Add a message to the conversation history"""
         import time
         
@@ -43,6 +51,7 @@ class ConversationSession:
             "role": role,
             "content": content,
             "agent_name": agent_name,
+            "type": message_type,  # Adding type field as requested
             "metadata": metadata or {}
         }
         
@@ -88,6 +97,59 @@ class SessionManager:
         
         return session
     
+    async def initialize_session_with_user_data(
+        self, 
+        user_id: str, 
+        whatsapp_business_account: str
+    ) -> ConversationSession:
+        """
+        Get or create a session and initialize with existing user data from database
+        """
+        # Get the session first
+        session = self.get_session(user_id)
+        
+        # If session already has a name, don't fetch again (unless it's a new session)
+        if session.customer_name:
+            return session
+        
+        # Try to fetch existing user data and org metadata
+        try:
+            from src.services.user_data_service import fetch_and_initialize_user_data
+            from src.services.messaging import fetch_org_metadata_internal
+            
+            # Fetch user data (existing name, etc.)
+            user_name, context_info = await fetch_and_initialize_user_data(
+                user_id, whatsapp_business_account
+            )
+            
+            if user_name:
+                session.customer_name = user_name
+                session.name_collection_asked = True  # Don't ask again if we have it
+                logger.info(f"📋 [SESSION_INIT] Loaded existing name for {user_id}: {user_name}")
+            
+            # Add context information to session
+            if context_info:
+                session.context.update(context_info)
+                logger.info(f"🔄 [SESSION_INIT] Loaded context for {user_id}: {list(context_info.keys())}")
+            
+            # Fetch organization metadata
+            org_metadata = await fetch_org_metadata_internal(user_id, whatsapp_business_account)
+            
+            if org_metadata and not org_metadata.get("error"):
+                session.org_id = org_metadata.get("org_id", "")
+                session.org_name = org_metadata.get("org_name", "")
+                logger.info(f"🏢 [SESSION_INIT] Loaded org metadata for {user_id}: {session.org_name} (ID: {session.org_id})")
+            else:
+                logger.warning(f"⚠️ [SESSION_INIT] Failed to fetch org metadata for {user_id}: {org_metadata.get('error', 'Unknown error')}")
+                
+        except Exception as e:
+            logger.error(f"❌ [SESSION_INIT] Failed to fetch user/org data for {user_id}: {e}")
+        
+        # Update session after potential data loading
+        self.update_session(user_id, session)
+        
+        return session
+    
     def update_session(self, user_id: str, session: ConversationSession) -> None:
         """
         Update session data in memory
@@ -101,7 +163,8 @@ class SessionManager:
         role: str, 
         content: str, 
         agent_name: Optional[str] = None,
-        metadata: Dict[str, Any] = None
+        metadata: Dict[str, Any] = None,
+        message_type: str = "text"
     ) -> None:
         """
         Add a message to the conversation history
@@ -113,6 +176,7 @@ class SessionManager:
             "role": role,  # "user" or "assistant"
             "content": content,
             "agent_name": agent_name,
+            "type": message_type,  # Adding type field as requested
             "metadata": metadata or {}
         }
         
@@ -233,4 +297,64 @@ class SessionManager:
             self.clear_session(user_id)
         
         if expired_users:
-            logger.info(f"Cleaned up {len(expired_users)} expired sessions") 
+            logger.info(f"Cleaned up {len(expired_users)} expired sessions")
+    
+    def increment_question_count(self, user_id: str) -> None:
+        """
+        Increment the question count for a user
+        """
+        session = self.get_session(user_id)
+        session.user_question_count += 1
+        self.update_session(user_id, session)
+        logger.info(f"User {user_id} question count: {session.user_question_count}")
+    
+    def should_ask_for_name(self, user_id: str, threshold: int = 2) -> bool:
+        """
+        Check if we should ask for the user's name
+        """
+        session = self.get_session(user_id)
+        return (
+            session.user_question_count >= threshold and
+            not session.customer_name and
+            not session.name_collection_asked
+        )
+    
+    def mark_name_collection_asked(self, user_id: str) -> None:
+        """
+        Mark that we've asked for the user's name
+        """
+        session = self.get_session(user_id)
+        session.name_collection_asked = True
+        session.awaiting_name_response = True
+        self.update_session(user_id, session)
+    
+    def save_customer_name(self, user_id: str, name: str) -> None:
+        """
+        Save the customer's name
+        """
+        session = self.get_session(user_id)
+        session.customer_name = name.strip()
+        session.awaiting_name_response = False
+        self.update_session(user_id, session)
+        logger.info(f"Saved customer name for {user_id}: {name}")
+    
+    def get_customer_name(self, user_id: str) -> Optional[str]:
+        """
+        Get the customer's name if available
+        """
+        session = self.get_session(user_id)
+        return session.customer_name if session.customer_name else None
+    
+    def is_awaiting_name_response(self, user_id: str) -> bool:
+        """
+        Check if we're waiting for a name response from the user
+        """
+        session = self.get_session(user_id)
+        return session.awaiting_name_response
+    
+    def get_org_id(self, user_id: str) -> Optional[str]:
+        """
+        Get the organization ID for a user
+        """
+        session = self.get_session(user_id)
+        return session.org_id if session.org_id else None 
