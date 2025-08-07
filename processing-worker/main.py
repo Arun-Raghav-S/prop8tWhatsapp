@@ -62,12 +62,22 @@ async def _handle_name_extraction_async(user_number: str, message: str, whatsapp
         extracted_name = await name_collection_service.extract_name_from_message(message)
         
         if extracted_name:
+            # Get the pending question before saving the name
+            pending_question = session_manager.get_pending_question(user_number)
+            
             # Save the name
             session_manager.save_customer_name(user_number, extracted_name)
             logger.info(f"💾 [NAME_EXTRACTION] Saved name: {extracted_name} for {user_number}")
             
-            # Send a follow-up message confirming name was saved
-            confirmation_message = f"Got it! I'll remember your name is {extracted_name}. 😊"
+            # Generate a combined message that addresses the name AND the pending question
+            confirmation_message = name_collection_service.generate_name_confirmation_message(
+                extracted_name, pending_question
+            )
+            
+            # Clear the pending question since we're addressing it
+            session_manager.clear_pending_question(user_number)
+            
+            # Send the combined response
             await send_message_via_aisensy(
                 to_phone=user_number,
                 message=confirmation_message,
@@ -238,7 +248,7 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
                         # Check if we should ask for name (using config threshold)
                         from src.config import config
                         if session_manager.should_ask_for_name(user_number, config.NAME_COLLECTION_QUESTION_THRESHOLD):
-                            session_manager.mark_name_collection_asked(user_number)
+                            session_manager.mark_name_collection_asked(user_number, text_message)  # Store the pending question
                             # Override agent response to ask for name
                             agent_response = name_collection_service.generate_name_request_message()
                             logger.info(f"🎯 NAME_REQUEST: Asked {user_number} for name after {session.user_question_count} questions")

@@ -127,7 +127,7 @@ class ResponseCache:
     
     def _get_generic_properties_template(self) -> str:
         """Template for generic property listings"""
-        return """🏠 **Found {property_count} amazing properties for you!**
+        return """🏠 *Found {property_count} amazing properties for you!*
 
 Let's dive into the details of these fantastic options:
 
@@ -135,43 +135,43 @@ Let's dive into the details of these fantastic options:
 
 ---
 
-✨ **Industrial Features Used:**
-- **Advanced Sorting:** Results organized by relevance and value
-- **Intelligent Limits:** Focused results for better decision-making  
-- **Real-time Data:** Latest market information
+✨ *Industrial Features Used:*
+- *Advanced Sorting:* Results organized by relevance and value
+- *Intelligent Limits:* Focused results for better decision-making  
+- *Real-time Data:* Latest market information
 
 ---
 
-🔍 **Next Steps:**
-- **Visit:** Schedule a visit to any property that interests you
-- **Details:** Ask for more information about specific properties
-- **Refine:** Let me know your preferences to narrow down options
+🔍 *Next Steps:*
+- *Visit:* Schedule a visit to any property that interests you
+- *Details:* Ask for more information about specific properties
+- *Refine:* Let me know your preferences to narrow down options
 
 Feel free to ask about any property! 😊"""
     
     def _get_booking_confirmation_template(self) -> str:
         """Template for booking confirmations"""
-        return """✅ **Visit Scheduled Successfully!**
+        return """✅ *Visit Scheduled Successfully!*
 
-🎫 **Booking Reference:** {booking_ref}
+🎫 *Booking Reference:* {booking_ref}
 
-🏢 **Property Details:**
-   • **Name:** {property_name}
-   • **Location:** {property_location}
-   • **Type:** {property_type}
+🏢 *Property Details:*
+   • *Name:* {property_name}
+   • *Location:* {property_location}
+   • *Type:* {property_type}
 
-📅 **Visit Details:**
-   • **Date:** {visit_date}
-   • **Time:** {visit_time}
+📅 *Visit Details:*
+   • *Date:* {visit_date}
+   • *Time:* {visit_time}
 
-📋 **What happens next:**
-1. **Confirmation Call:** Our team will call you within 2 hours to confirm details
-2. **Agent Assignment:** You'll get your viewing agent's contact info
-3. **Meeting Point:** Exact location and parking details will be shared
-4. **Property Tour:** Professional guided viewing with all amenities
+📋 *What happens next:*
+1. *Confirmation Call:* Our team will call you within 2 hours to confirm details
+2. *Agent Assignment:* You'll get your viewing agent's contact info
+3. *Meeting Point:* Exact location and parking details will be shared
+4. *Property Tour:* Professional guided viewing with all amenities
 
-📱 **Important:**
-   • Keep this booking reference: **{booking_ref}**
+📱 *Important:*
+   • Keep this booking reference: *{booking_ref}*
    • If you need to reschedule, reply with your reference number
    • Arrive 5 minutes early for the best experience
 

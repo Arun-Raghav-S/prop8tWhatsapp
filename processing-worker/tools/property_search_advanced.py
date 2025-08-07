@@ -198,7 +198,7 @@ class AdvancedPropertySearchAgent:
             return {
                 'needs_clarification': True,
                 'clarification_type': 'buy_rent',
-                'message': "Hi there! 👋 Are you looking to **buy** or **rent** a property? This will help me find the best options for you! 🏠"
+                'message': "Hi there! 👋 Are you looking to *buy* or *rent* a property? This will help me find the best options for you! 🏠"
             }
         
         if is_buy_rent_answer and not answered_property_type:
@@ -212,7 +212,7 @@ class AdvancedPropertySearchAgent:
             return {
                 'needs_clarification': True,
                 'clarification_type': 'buy_rent',
-                'message': "I'd be happy to help! Are you looking to **buy** or **rent** a property? This will help me show you the most relevant options. 🏠"
+                'message': "I'd be happy to help! Are you looking to *buy* or *rent* a property? This will help me show you the most relevant options. 🏠"
             }
             
         return {'needs_clarification': False}
@@ -351,13 +351,13 @@ class AdvancedPropertySearchAgent:
         # Check if clarification is needed
         if industrial_features.get('intelligent_question_handling'):
             return AgentResponse(
-                answer="I'd be happy to help! Are you looking to **buy** or **rent** a property? This will help me show you the most relevant options. 🏠",
+                answer="I'd be happy to help! Are you looking to *buy* or *rent* a property? This will help me show you the most relevant options. 🏠",
                 context=[],
                 extracted_params=extracted_params,
                 execution_time=(time.time() - start_time),
                 industrial_features=industrial_features,
                 requires_clarification=True,
-                clarification_message="I'd be happy to help! Are you looking to **buy** or **rent** a property? This will help me show you the most relevant options. 🏠"
+                clarification_message="I'd be happy to help! Are you looking to *buy* or *rent* a property? This will help me show you the most relevant options. 🏠"
             )
 
         # Answer Generation (optimized)
@@ -429,10 +429,10 @@ class AdvancedPropertySearchAgent:
             elif prop.rent_price_aed:
                 price = f"AED {prop.rent_price_aed:,}/year"
             
-            formatted += f"**{i+1}. {prop.property_type or 'Property'} in {locality}**\n"
-            formatted += f"📍 **Location:** {prop.building_name or 'Premium Location'}\n"
-            formatted += f"💰 **Price:** {price}\n"
-            formatted += f"📐 **Size:** {prop.bua_sqft or 0} sqft\n\n"
+            formatted += f"*{i+1}. {prop.property_type or 'Property'} in {locality}*\n"
+            formatted += f"📍 *Location:* {prop.building_name or 'Premium Location'}\n"
+            formatted += f"💰 *Price:* {price}\n"
+            formatted += f"📐 *Size:* {prop.bua_sqft or 0} sqft\n\n"
         
         return formatted
 
@@ -972,15 +972,15 @@ Return only the JSON object, no additional text."""
         city = top_property.address.get('city') if top_property.address else None
         location = locality or city or 'Location not specified'
         
-        return f"""🏭 **Industrial Search Complete!** Found {len(search_results)} properties.
+        return f"""🏭 *Industrial Search Complete!* Found {len(search_results)} properties.
 
-**🔧 Features Used:**
+*🔧 Features Used:*
 - Negative Filtering: {'✅' if industrial_features['negative_filtering'] else '❌'}
 - Advanced Sorting: {'✅' if industrial_features['sorting'] else '❌'}
 - Multi-Criteria Sorting: {'✅' if industrial_features['multi_criteria_sorting'] else '❌'}
 - Intelligent Limits: {'✅' if industrial_features['intelligent_limits'] else '❌'}
 
-**🏆 Top Result:**
+*🏆 Top Result:*
 📍 {top_property.property_type} - {top_property.bedrooms}BR/{top_property.bathrooms}BA
 🏠 {location}
 💰 {price}

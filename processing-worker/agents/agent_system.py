@@ -198,7 +198,9 @@ class ConversationAgent:
             
             # Quick responses for common patterns (no AI needed)
             if any(greeting in message_lower for greeting in ['hi', 'hello', 'hey', 'good morning', 'good evening']):
-                return self.formatter.format_greeting()
+                # Get user name from session for personalized greeting
+                user_name = session.customer_name if hasattr(session, 'customer_name') and session.customer_name else None
+                return self.formatter.format_greeting(user_name)
             
             if any(help_word in message_lower for help_word in ['help', 'what can you do', 'assist', 'guide']):
                 return self.formatter.format_help()
@@ -622,6 +624,12 @@ class PropertyFollowupAgent:
             elif intent == "visit":
                 return await self._handle_visit_scheduling(message, target_property, session, session_manager)
             
+            elif intent == "nearest_place":
+                return await self._handle_nearest_place(message, target_property, followup_result)
+            
+            elif intent == "route":
+                return await self._handle_route_calculation(message, target_property, followup_result)
+            
             elif intent == "general":
                 return await self._handle_general_followup(message, target_property, session)
             
@@ -667,6 +675,124 @@ class PropertyFollowupAgent:
         except Exception as e:
             logger.error(f"Visit scheduling failed: {str(e)}")
             return "I'm sorry, I couldn't process your visit request. Please try again."
+    
+    async def _handle_nearest_place(self, message: str, property_data: Dict[str, Any], followup_result: Dict[str, Any]) -> str:
+        """
+        Handle nearest place queries using the location tools
+        """
+        try:
+            query = followup_result.get('query', message)
+            
+            # Extract what the user is looking for
+            query_lower = query.lower()
+            place_type = ""
+            
+            # Map keywords to place types
+            place_mapping = {
+                'hospital': 'hospital',
+                'school': 'school', 
+                'restaurant': 'restaurant',
+                'mall': 'shopping mall',
+                'airport': 'airport',
+                'metro': 'metro station',
+                'bus': 'bus station',
+                'pharmacy': 'pharmacy',
+                'bank': 'bank',
+                'grocery': 'grocery store',
+                'market': 'market',
+                'gym': 'gym',
+                'park': 'park'
+            }
+            
+            # Find the place type from the message
+            for keyword, place in place_mapping.items():
+                if keyword in query_lower:
+                    place_type = place
+                    break
+            
+            # If no specific place type found, use a generic query
+            if not place_type:
+                if 'nearest' in query_lower or 'nearby' in query_lower:
+                    place_type = query.replace('nearest', '').replace('nearby', '').strip()
+                else:
+                    place_type = query
+            
+            logger.info(f"🔍 Finding nearest '{place_type}' for property: {property_data.get('building_name', 'Unknown')}")
+            
+            # Use the location tools to find nearest places
+            result = await self.followup_handler.location_tools.find_nearest_place(
+                property_data, place_type, k=3
+            )
+            
+            # Format and return the response
+            return self.followup_handler.location_tools.format_nearest_places_response(result)
+            
+        except Exception as e:
+            logger.error(f"Nearest place search failed: {str(e)}")
+            return f"I'm sorry, I couldn't find nearby places. Please try again or be more specific about what you're looking for."
+    
+    async def _handle_route_calculation(self, message: str, property_data: Dict[str, Any], followup_result: Dict[str, Any]) -> str:
+        """
+        Handle route calculation queries using the location tools
+        """
+        try:
+            query = followup_result.get('query', message)
+            query_lower = query.lower()
+            
+            # Determine if property is origin or destination
+            is_origin = True  # Default: property is origin
+            destination = ""
+            
+            # Extract destination from the query
+            if 'from' in query_lower and 'to' in query_lower:
+                # Handle "route from X to Y" format
+                parts = query_lower.split('to')
+                if len(parts) >= 2:
+                    destination = parts[-1].strip()
+                    if 'property' not in parts[0] and property_data.get('building_name', '').lower() not in parts[0]:
+                        is_origin = False  # Property is destination
+            elif 'to' in query_lower:
+                # Handle "route to X" format - property is origin
+                destination = query_lower.split('to')[-1].strip()
+                is_origin = True
+            elif 'from' in query_lower:
+                # Handle "route from X" format - property is destination
+                destination = query_lower.split('from')[-1].strip()
+                is_origin = False
+            elif 'how to reach' in query_lower:
+                # Handle "how to reach X" - property is origin, X is destination
+                destination = query_lower.replace('how to reach', '').strip()
+                is_origin = True
+            elif 'how to get' in query_lower:
+                # Handle "how to get to X" - property is origin
+                if 'to' in query_lower:
+                    destination = query_lower.split('to')[-1].strip()
+                else:
+                    destination = query_lower.replace('how to get', '').strip()
+                is_origin = True
+            else:
+                # Extract destination as any location mentioned
+                common_words = ['route', 'direction', 'distance', 'travel', 'time', 'driving', 'walking', 'commute', 'the', 'a', 'an', 'is', 'are', 'what', 'how']
+                words = query.split()
+                destination_words = [word for word in words if word.lower() not in common_words]
+                destination = ' '.join(destination_words) if destination_words else query
+            
+            if not destination:
+                return "Please specify where you'd like to go or come from. For example: 'route to airport' or 'how to reach the mall'."
+            
+            logger.info(f"🗺️ Calculating route: Property '{property_data.get('building_name', 'Unknown')}' {'→' if is_origin else '←'} '{destination}'")
+            
+            # Use the location tools to calculate route
+            result = await self.followup_handler.location_tools.calculate_route(
+                property_data, destination, is_origin=is_origin
+            )
+            
+            # Format and return the response
+            return self.followup_handler.location_tools.format_route_response(result)
+            
+        except Exception as e:
+            logger.error(f"Route calculation failed: {str(e)}")
+            return f"I'm sorry, I couldn't calculate the route. Please try again with a specific destination like 'route to airport' or 'how to reach the mall'."
     
     async def _handle_general_followup(self, message: str, property_data: Dict[str, Any], session: ConversationSession) -> str:
         """

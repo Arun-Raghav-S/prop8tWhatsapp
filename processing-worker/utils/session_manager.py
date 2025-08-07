@@ -30,6 +30,7 @@ class ConversationSession:
     customer_name: str = ""
     name_collection_asked: bool = False
     awaiting_name_response: bool = False
+    pending_question: str = ""  # Store the question asked before name collection
     # Organization metadata
     org_id: str = ""
     org_name: str = ""
@@ -139,6 +140,15 @@ class SessionManager:
                 session.org_id = org_metadata.get("org_id", "")
                 session.org_name = org_metadata.get("org_name", "")
                 logger.info(f"🏢 [SESSION_INIT] Loaded org metadata for {user_id}: {session.org_name} (ID: {session.org_id})")
+                
+                # FALLBACK: If we didn't get user name from database, try from org metadata
+                if not session.customer_name:
+                    org_customer_name = org_metadata.get("customer_name")
+                    if org_customer_name:
+                        session.customer_name = org_customer_name
+                        session.name_collection_asked = True  # Don't ask again
+                        logger.info(f"✅ [SESSION_INIT] Using customer name from org metadata: {org_customer_name}")
+                
             else:
                 logger.warning(f"⚠️ [SESSION_INIT] Failed to fetch org metadata for {user_id}: {org_metadata.get('error', 'Unknown error')}")
                 
@@ -319,13 +329,14 @@ class SessionManager:
             not session.name_collection_asked
         )
     
-    def mark_name_collection_asked(self, user_id: str) -> None:
+    def mark_name_collection_asked(self, user_id: str, pending_question: str = "") -> None:
         """
         Mark that we've asked for the user's name
         """
         session = self.get_session(user_id)
         session.name_collection_asked = True
         session.awaiting_name_response = True
+        session.pending_question = pending_question  # Store what they were asking before
         self.update_session(user_id, session)
     
     def save_customer_name(self, user_id: str, name: str) -> None:
@@ -337,6 +348,21 @@ class SessionManager:
         session.awaiting_name_response = False
         self.update_session(user_id, session)
         logger.info(f"Saved customer name for {user_id}: {name}")
+    
+    def get_pending_question(self, user_id: str) -> Optional[str]:
+        """
+        Get the pending question that was asked before name collection
+        """
+        session = self.get_session(user_id)
+        return session.pending_question if session.pending_question else None
+    
+    def clear_pending_question(self, user_id: str) -> None:
+        """
+        Clear the pending question after it's been answered
+        """
+        session = self.get_session(user_id)
+        session.pending_question = ""
+        self.update_session(user_id, session)
     
     def get_customer_name(self, user_id: str) -> Optional[str]:
         """

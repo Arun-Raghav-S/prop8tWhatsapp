@@ -38,7 +38,7 @@ class LocalTestClient:
         self.agent_system = WhatsAppAgentSystem()
         self.session_manager = SessionManager()
         self.test_user_number = "+918281840462"  # Default test user
-        self.test_business_account = "test_business_account"  # Default test business account
+        self.test_business_account = "543107385407043"  # Default test business account
         self.session = None
         
     async def start(self):
@@ -58,8 +58,11 @@ class LocalTestClient:
         print("  <message>     - Send message to agent")
         print("=" * 50)
         
-        # Initialize session
-        self.session = self.session_manager.get_session(self.test_user_number)
+        # Initialize session with user data (fetch from database)
+        self.session = await self.session_manager.initialize_session_with_user_data(
+            self.test_user_number, 
+            self.test_business_account
+        )
         
         # Main interaction loop
         while True:
@@ -100,8 +103,15 @@ class LocalTestClient:
             if len(parts) > 1:
                 old_user = self.test_user_number
                 self.test_user_number = parts[1]
-                self.session = self.session_manager.get_session(self.test_user_number)
+                # Initialize session with user data for the new user
+                self.session = await self.session_manager.initialize_session_with_user_data(
+                    self.test_user_number, 
+                    self.test_business_account
+                )
                 print(f"✅ Changed user from {old_user} to {self.test_user_number}")
+                # Show if name was found
+                if self.session.customer_name:
+                    print(f"📋 Found existing user: {self.session.customer_name}")
             else:
                 print("❌ Usage: /user <phone_number>")
                 
@@ -119,7 +129,10 @@ class LocalTestClient:
             print(f"  Business Account: {self.test_business_account}")
             print(f"  Session Active: {self.session is not None}")
             if self.session:
-                print(f"  Session Data: {vars(self.session)}")
+                print(f"  User Name: {self.session.customer_name or 'Not found'}")
+                print(f"  Organization: {getattr(self.session, 'org_name', 'Not found')}")
+                print(f"  Question Count: {getattr(self.session, 'user_question_count', 0)}")
+                print(f"  Full Session Data: {vars(self.session)}")
                 
         elif cmd == '/org':
             print("🏢 Fetching organization metadata...")

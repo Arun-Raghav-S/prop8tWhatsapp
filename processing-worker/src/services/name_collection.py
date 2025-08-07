@@ -90,17 +90,25 @@ Examples:
         else:
             return "Hi there! 👋 May I know your name so I can assist you better? 😊"
     
-    def generate_name_confirmation_message(self, name: str) -> str:
+    def generate_name_confirmation_message(self, name: str, pending_question: str = "") -> str:
         """
         Generate a message confirming the name was saved
         
         Args:
             name: The saved name
+            pending_question: The question they asked before name collection
             
         Returns:
-            Confirmation message
+            Confirmation message, optionally with response to pending question
         """
-        return f"Great! Nice to meet you, {name}! 😊 How can I help you today?"
+        if pending_question:
+            # If they had a pending question (like "surprise me"), address it directly
+            if "surprise" in pending_question.lower():
+                return f"Got it, {name}! I'd be happy to help! Are you looking to *buy* or *rent* a property? This will help me show you the most relevant options. 🏠"
+            else:
+                return f"Got it, {name}! Now, about your question: {pending_question}. How can I help you with that?"
+        else:
+            return f"Got it, {name}! 😊 How can I help you today?"
     
     async def is_likely_name_response(self, message: str, awaiting_name: bool = False) -> bool:
         """

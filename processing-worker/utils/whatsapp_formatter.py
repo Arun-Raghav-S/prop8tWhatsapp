@@ -270,10 +270,16 @@ class WhatsAppFormatter:
                f"{self.bold('Try:')}\n" + "\n".join([f"• {s}" for s in suggestions]) + \
                f"\n\nJust tell me what you're looking for! {self.emojis['property']}"
     
-    def format_greeting(self) -> str:
-        """Format greeting message"""
+    def format_greeting(self, user_name: Optional[str] = None) -> str:
+        """Format greeting message with optional personalization"""
         
-        return f"Hey there! {self.emojis['property']} I'm your Dubai property assistant.\n\n" \
+        # Personalized greeting if we know the user's name
+        if user_name and user_name.strip():
+            greeting = f"Hey {user_name}! {self.emojis['property']} I'm your Dubai property assistant."
+        else:
+            greeting = f"Hey there! {self.emojis['property']} I'm your Dubai property assistant."
+        
+        return f"{greeting}\n\n" \
                f"{self.bold('I can help you:')}\n" \
                f"• Find apartments, villas, penthouses\n" \
                f"• Get market prices and stats\n" \

@@ -267,6 +267,10 @@ class PropertyFollowupHandler:
         self.openai = openai_client
         self.location_tool = PropertyLocationTool(openai_client)
         self.visit_scheduler = PropertyVisitScheduler(openai_client)
+        
+        # Import location tools handler
+        from .location_tools import location_tools_handler
+        self.location_tools = location_tools_handler
     
     async def detect_followup_intent(self, message: str, has_active_properties: bool) -> Dict[str, Any]:
         """
@@ -294,8 +298,32 @@ class PropertyFollowupHandler:
                     "confidence": processed['confidence']
                 }
             
-            # STEP 3: Check for location queries
-            location_keywords = ['where', 'location', 'address', 'area', 'nearby', 'close to', 'near']
+            # STEP 3: Check for nearest place queries
+            nearest_place_keywords = ['nearest', 'nearby', 'close', 'hospital', 'school', 'restaurant', 'mall', 'airport', 'metro', 'bus', 'pharmacy', 'bank', 'grocery', 'market', 'gym', 'park']
+            if any(keyword in corrected_message.lower() for keyword in nearest_place_keywords):
+                property_ref = message_processor.extract_property_reference(processed)
+                return {
+                    "is_followup": True,
+                    "intent": "nearest_place",
+                    "property_reference": property_ref or "first",
+                    "confidence": processed['confidence'],
+                    "query": corrected_message
+                }
+            
+            # STEP 4: Check for route/direction queries
+            route_keywords = ['route', 'direction', 'how to reach', 'how to get', 'distance', 'travel time', 'driving', 'walking', 'commute']
+            if any(keyword in corrected_message.lower() for keyword in route_keywords):
+                property_ref = message_processor.extract_property_reference(processed)
+                return {
+                    "is_followup": True,
+                    "intent": "route",
+                    "property_reference": property_ref or "first",
+                    "confidence": processed['confidence'],
+                    "query": corrected_message
+                }
+            
+            # STEP 5: Check for general location queries
+            location_keywords = ['where', 'location', 'address', 'area']
             if any(keyword in corrected_message.lower() for keyword in location_keywords):
                 property_ref = message_processor.extract_property_reference(processed)
                 return {
@@ -305,7 +333,7 @@ class PropertyFollowupHandler:
                     "confidence": processed['confidence']
                 }
             
-            # STEP 4: General property questions
+            # STEP 6: General property questions
             property_keywords = ['price', 'cost', 'features', 'amenities', 'details', 'info', 'tell me']
             if any(keyword in corrected_message.lower() for keyword in property_keywords):
                 property_ref = message_processor.extract_property_reference(processed)
@@ -316,7 +344,7 @@ class PropertyFollowupHandler:
                     "confidence": processed['confidence']
                 }
             
-            # STEP 5: Fallback for unclear messages
+            # STEP 7: Fallback for unclear messages
             if processed['intent_signals']['has_property_reference']:
                 return {
                     "is_followup": True,
