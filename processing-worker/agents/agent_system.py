@@ -12,7 +12,7 @@ from utils.logger import setup_logger, log_agent_interaction
 from utils.session_manager import ConversationSession
 from tools.property_search_advanced import PropertySearchAgent as AdvancedPropertySearchAgent
 from tools.fast_statistical_handler import FastStatisticalQueryHandler
-from tools.property_followup_tools import PropertyFollowupHandler
+
 
 logger = setup_logger(__name__)
 
@@ -26,16 +26,14 @@ class WhatsAppAgentSystem:
         self.openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.advanced_property_agent = AdvancedPropertySearchAgent()
         self.fast_statistical_handler = FastStatisticalQueryHandler()
-        self.followup_handler = PropertyFollowupHandler(self.openai)
         
-        # Initialize agents
+        # Initialize core agents (all context-aware)
         self.triage_agent = TriageAgent(self.openai)
         self.conversation_agent = ConversationAgent(self.openai)
         self.property_search_agent = PropertySearchAgent(self.openai, self.advanced_property_agent)
         self.statistics_agent = StatisticsAgent(self.openai, self.advanced_property_agent, self.fast_statistical_handler)
-        self.followup_agent = PropertyFollowupAgent(self.openai, self.followup_handler)
         
-        logger.info("WhatsApp Agent System initialized with 5 specialized agents + follow-up tools")
+        logger.info("WhatsApp Agent System initialized with 4 context-aware agents")
     
     async def process_message(self, message: str, session: ConversationSession) -> str:
         """
@@ -59,6 +57,13 @@ class WhatsAppAgentSystem:
                     result.get('sale_or_rent', 'sale')
                 )
                 
+                # Store single property results for follow-up questions
+                if result.get('results') and len(result['results']) == 1:
+                    from utils.session_manager import SessionManager
+                    session_manager = SessionManager()
+                    session_manager.set_active_properties(session.user_id, result['results'])
+                    logger.info(f"🏠 FAST_PATH_STORED: 1 property for follow-up questions for user {session.user_id}")
+                
                 # Log to session
                 session.add_message("user", message, "fast_path", metadata=None, message_type="text")
                 session.add_message("assistant", response, "fast_path", metadata={
@@ -72,28 +77,19 @@ class WhatsAppAgentSystem:
             # FULL PATH: Regular multi-agent processing for complex queries
             logger.info("🔄 Using FULL PIPELINE for complex query")
             
-            # Check for property follow-up first
-            has_active_properties = bool(session.context.get('active_properties'))
-            followup_result = await self.followup_handler.detect_followup_intent(message, has_active_properties)
+            # Step 1: Determine which agent should handle this message
+            agent_choice = await self.triage_agent.route_message(message, session)
             
-            if followup_result.get('is_followup', False):
-                logger.info(f"🔍 FOLLOW-UP detected: {followup_result.get('intent')}")
-                response = await self.followup_agent.handle_message(message, session, followup_result)
-                agent_choice = "followup"
+            # Step 2: Route to appropriate agent (ALL agents now have full context)
+            if agent_choice == "conversation":
+                response = await self.conversation_agent.handle_message(message, session)
+            elif agent_choice == "property_search":
+                response = await self.property_search_agent.handle_message(message, session)
+            elif agent_choice == "statistics":
+                response = await self.statistics_agent.handle_message(message, session)
             else:
-                # Step 1: Determine which agent should handle this message
-                agent_choice = await self.triage_agent.route_message(message, session)
-                
-                # Step 2: Route to appropriate agent
-                if agent_choice == "conversation":
-                    response = await self.conversation_agent.handle_message(message, session)
-                elif agent_choice == "property_search":
-                    response = await self.property_search_agent.handle_message(message, session)
-                elif agent_choice == "statistics":
-                    response = await self.statistics_agent.handle_message(message, session)
-                else:
-                    # Default to conversation agent
-                    response = await self.conversation_agent.handle_message(message, session)
+                # Default to conversation agent
+                response = await self.conversation_agent.handle_message(message, session)
             
             processing_time = (time.time() - start_time) * 1000
             
@@ -142,16 +138,16 @@ Recent conversation context:
 User's current message: "{message}"
 
 Available agents:
-1. "conversation" - For greetings, general chat, help requests, casual conversation
-2. "property_search" - For searching properties, finding apartments/villas, specific property queries
+1. "conversation" - For greetings, general chat, help requests, casual conversation, AND follow-up questions about previously shown properties
+2. "property_search" - For NEW property searches, finding apartments/villas, specific property queries when they want NEW results
 3. "statistics" - For market analysis, price averages, trends, statistical queries about properties
 
 Rules:
-- If user is asking for property search (apartments, villas, properties, rent, sale, specific locations, "what apartments do you have", "show me properties"), route to "property_search"
-- If user asks ONLY for pure statistics (average prices, market trends) WITHOUT wanting to see specific properties, route to "statistics"  
-- For greetings, casual chat, help requests, or unclear messages, route to "conversation"
-- When in doubt between property_search and statistics, choose "property_search"
-- NOTE: Follow-up questions about specific properties are handled by a separate system
+- If user is asking about properties ALREADY SHOWN in the conversation ("tell me more about this", "what makes it special", "more details", etc.), route to "conversation"
+- If user wants NEW property search ("show me apartments", "find 3BR properties", "properties in Marina"), route to "property_search"
+- If user asks for pure statistics (average prices, market trends) WITHOUT wanting specific properties, route to "statistics"
+- For greetings, casual chat, help requests, route to "conversation"
+- When unclear, prefer "conversation" for follow-ups or "property_search" for new searches
 
 Respond with only one word: conversation, property_search, or statistics
 """
@@ -187,7 +183,9 @@ class ConversationAgent:
         self.openai = openai_client
         # Import here to avoid circular imports
         from utils.whatsapp_formatter import whatsapp_formatter
+        from src.services.property_details_service import property_details_service
         self.formatter = whatsapp_formatter
+        self.property_details_service = property_details_service
     
     async def handle_message(self, message: str, session: ConversationSession) -> str:
         """
@@ -196,38 +194,74 @@ class ConversationAgent:
         try:
             message_lower = message.lower().strip()
             
-            # Quick responses for common patterns (no AI needed)
-            if any(greeting in message_lower for greeting in ['hi', 'hello', 'hey', 'good morning', 'good evening']):
-                # Get user name from session for personalized greeting
-                user_name = session.customer_name if hasattr(session, 'customer_name') and session.customer_name else None
-                return self.formatter.format_greeting(user_name)
+            # Check if we have active properties first - if so, skip hardcoded responses and use AI
+            active_properties = session.context.get('active_properties', [])
+            has_active_properties = len(active_properties) > 0
             
-            if any(help_word in message_lower for help_word in ['help', 'what can you do', 'assist', 'guide']):
-                return self.formatter.format_help()
+            # Only use hardcoded responses if NO active properties (to avoid context conflicts)
+            if not has_active_properties:
+                # Quick responses for common patterns (no AI needed)
+                if any(greeting in message_lower for greeting in ['hi', 'hello', 'hey', 'good morning', 'good evening']):
+                    # Get user name from session for personalized greeting
+                    user_name = session.customer_name if hasattr(session, 'customer_name') and session.customer_name else None
+                    return self.formatter.format_greeting(user_name)
+                
+                if any(help_word in message_lower for help_word in ['help', 'what can you do', 'assist', 'guide']):
+                    return self.formatter.format_help()
+                
+                if any(thanks in message_lower for thanks in ['thank', 'thanks', 'appreciate']):
+                    return f"You're welcome! {self.formatter.emojis['sparkles']} Anything else I can help you find? {self.formatter.emojis['property']}"
             
-            if any(thanks in message_lower for thanks in ['thank', 'thanks', 'appreciate']):
-                return f"You're welcome! {self.formatter.emojis['sparkles']} Anything else I can help you find? {self.formatter.emojis['property']}"
+            # Check if user is asking for detailed property information
+            active_properties = session.context.get('active_properties', [])
+            is_detail_request = self._is_property_detail_request(message)
             
-            # For other conversation, use minimal AI with focused prompt
+            if has_active_properties and is_detail_request and len(active_properties) > 0:
+                # User wants detailed info about an active property - fetch comprehensive details
+                logger.info(f"🔍 User requesting detailed property info: '{message}'")
+                
+                # Get the first/most relevant property (users usually refer to the last shown)
+                target_property = active_properties[0]
+                property_id = target_property.get('id')
+                
+                if property_id:
+                    # Fetch comprehensive property details
+                    detailed_property = await self.property_details_service.get_property_details(property_id)
+                    
+                    if detailed_property:
+                        # Return formatted detailed response
+                        return self.property_details_service.format_detailed_property_response(
+                            detailed_property, message
+                        )
+                    else:
+                        logger.warning(f"Failed to fetch detailed property info for ID: {property_id}")
+                        # Fall through to AI response
+                else:
+                    logger.warning("Property ID not available for detailed lookup")
+            
+            # Build context-aware prompt with conversation history and active properties
+            conversation_context = self._build_conversation_context(session)
+            
             conversation_prompt = f"""
-You are a casual but helpful Dubai property assistant. Keep responses short and WhatsApp-friendly.
+You are a helpful Dubai property assistant. You have full context of the conversation.
 
-User said: "{message}"
+{conversation_context}
 
-Respond naturally and briefly. Use emojis sparingly. If they're asking about properties, guide them to be more specific.
+Current user message: "{message}"
 
-Examples:
-- "That's great! What kind of property are you looking for?"
-- "Sure! Try asking 'show me 2BR apartments in Marina'"
-- "No problem! What area interests you?"
+Instructions:
+- If they're asking about previously shown properties, answer specifically about those properties
+- If it's a general question, respond helpfully
+- Use emojis sparingly and keep responses WhatsApp-friendly
+- If you need to reference properties, use the details from the context above
 
-Keep it under 50 words and conversational."""
+Respond naturally and contextually."""
 
             response = await self.openai.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": conversation_prompt}],
                 temperature=0.7,
-                max_tokens=100
+                max_tokens=400
             )
             
             return response.choices[0].message.content
@@ -235,6 +269,80 @@ Keep it under 50 words and conversational."""
         except Exception as e:
             logger.error(f"Conversation agent failed: {str(e)}")
             return self.formatter.format_error()
+    
+    def _build_conversation_context(self, session: ConversationSession) -> str:
+        """
+        Build rich context from conversation history and active properties
+        """
+        context_parts = []
+        
+        # Add recent conversation history
+        if session.conversation_history:
+            recent_messages = session.conversation_history[-4:]  # Last 4 exchanges
+            context_parts.append("Recent conversation:")
+            for msg in recent_messages:
+                role = "User" if msg['role'] == 'user' else "Assistant"
+                content = msg['content'][:100] + ("..." if len(msg['content']) > 100 else "")
+                context_parts.append(f"- {role}: {content}")
+        
+        # Add active properties if any
+        active_properties = session.context.get('active_properties', [])
+        if active_properties:
+            context_parts.append(f"\nCurrently shown properties ({len(active_properties)}):")
+            for i, prop in enumerate(active_properties[:3], 1):  # Show up to 3 properties
+                prop_summary = f"Property {i}: {prop.get('bedrooms', '?')}BR {prop.get('property_type', 'Property')} in {prop.get('address', {}).get('locality', 'Dubai')}"
+                if prop.get('sale_price_aed'):
+                    prop_summary += f" - AED {prop['sale_price_aed']:,}"
+                elif prop.get('rent_price_aed'): 
+                    prop_summary += f" - AED {prop['rent_price_aed']:,}/year"
+                
+                # Add key features
+                features = []
+                if prop.get('bua_sqft'):
+                    features.append(f"{prop['bua_sqft']} sqft")
+                if prop.get('bathrooms'):
+                    features.append(f"{prop['bathrooms']} bath")
+                if features:
+                    prop_summary += f" ({', '.join(features)})"
+                    
+                context_parts.append(f"- {prop_summary}")
+        
+        # Add user info if available
+        if hasattr(session, 'customer_name') and session.customer_name:
+            context_parts.append(f"\nUser name: {session.customer_name}")
+            
+        return "\n".join(context_parts) if context_parts else "No previous context."
+    
+    def _is_property_detail_request(self, message: str) -> bool:
+        """
+        Detect if user is asking for detailed property information
+        """
+        message_lower = message.lower().strip()
+        
+        # Patterns that indicate user wants detailed information
+        detail_patterns = [
+            # Direct requests
+            'tell me more', 'more about', 'more info', 'more details',
+            'details about', 'tell me about', 'what about',
+            
+            # Feature questions
+            'features', 'amenities', 'what features', 'what amenities',
+            'facilities', 'what facilities',
+            
+            # Specific aspects
+            'special about', 'unique about', 'special features',
+            'what makes', 'why', 'how is', 'describe',
+            
+            # Property specifics
+            'layout', 'size', 'rooms', 'parking', 'view',
+            'garden', 'balcony', 'study', 'maid room',
+            
+            # General inquiry patterns
+            'about this', 'about it', 'this one', 'this property',
+            'more on', 'elaborate', 'explain'
+        ]
+        
+        return any(pattern in message_lower for pattern in detail_patterns)
 
 
 class PropertySearchAgent:
@@ -589,267 +697,3 @@ class StatisticsAgent:
             return f"I found {len(results)} properties but couldn't generate detailed statistics. Please try again."
 
 
-class PropertyFollowupAgent:
-    """
-    Agent specialized in handling follow-up questions about active properties
-    """
-    
-    def __init__(self, openai_client: AsyncOpenAI, followup_handler: PropertyFollowupHandler):
-        self.openai = openai_client
-        self.followup_handler = followup_handler
-    
-    async def handle_message(self, message: str, session: ConversationSession, followup_result: Dict[str, Any]) -> str:
-        """
-        Handle follow-up messages about active properties
-        """
-        try:
-            intent = followup_result.get('intent')
-            property_reference = followup_result.get('property_reference', '')
-            
-            # Import session manager to get properties
-            from utils.session_manager import SessionManager
-            session_manager = SessionManager()
-            
-            # Get the specific property being referenced
-            target_property = session_manager.get_property_by_reference(session.user_id, property_reference)
-            
-            if not target_property:
-                return "I'm sorry, I couldn't find the property you're referring to. Could you please be more specific?"
-            
-            logger.info(f"🎯 Follow-up for property: {target_property.get('building_name', 'Unknown')} - Intent: {intent}")
-            
-            if intent == "location":
-                return await self.followup_handler.location_tool.get_location_details(target_property)
-            
-            elif intent == "visit":
-                return await self._handle_visit_scheduling(message, target_property, session, session_manager)
-            
-            elif intent == "nearest_place":
-                return await self._handle_nearest_place(message, target_property, followup_result)
-            
-            elif intent == "route":
-                return await self._handle_route_calculation(message, target_property, followup_result)
-            
-            elif intent == "general":
-                return await self._handle_general_followup(message, target_property, session)
-            
-            else:
-                return "I'm not sure what you'd like to know about this property. Could you please be more specific?"
-                
-        except Exception as e:
-            logger.error(f"Property followup agent failed: {str(e)}")
-            return "I'm sorry, I couldn't process your follow-up question. Please try again."
-    
-    async def _handle_visit_scheduling(self, message: str, property_data: Dict[str, Any], session: ConversationSession, session_manager) -> str:
-        """
-        Handle visit scheduling requests
-        """
-        try:
-            # Get current session context for any pending booking data
-            session_context = session.context
-            
-            # Collect visit details from the message
-            visit_result = await self.followup_handler.visit_scheduler.collect_visit_details(
-                message, property_data, session_context
-            )
-            
-            booking_data = visit_result['booking_data']
-            is_complete = visit_result['is_complete']
-            missing_info = visit_result['missing_info']
-            
-            # Update session with pending booking data
-            session.context['pending_visit_booking'] = booking_data
-            session_manager.update_session(session.user_id, session)
-            
-            if is_complete:
-                # Schedule the visit
-                response = await self.followup_handler.visit_scheduler.schedule_visit(booking_data)
-                # Clear pending booking data
-                session.context.pop('pending_visit_booking', None)
-                session_manager.update_session(session.user_id, session)
-                return response
-            else:
-                # Ask for missing information
-                return await self.followup_handler.visit_scheduler.ask_for_missing_info(missing_info, property_data)
-                
-        except Exception as e:
-            logger.error(f"Visit scheduling failed: {str(e)}")
-            return "I'm sorry, I couldn't process your visit request. Please try again."
-    
-    async def _handle_nearest_place(self, message: str, property_data: Dict[str, Any], followup_result: Dict[str, Any]) -> str:
-        """
-        Handle nearest place queries using the location tools
-        """
-        try:
-            query = followup_result.get('query', message)
-            
-            # Extract what the user is looking for
-            query_lower = query.lower()
-            place_type = ""
-            
-            # Map keywords to place types
-            place_mapping = {
-                'hospital': 'hospital',
-                'school': 'school', 
-                'restaurant': 'restaurant',
-                'mall': 'shopping mall',
-                'airport': 'airport',
-                'metro': 'metro station',
-                'bus': 'bus station',
-                'pharmacy': 'pharmacy',
-                'bank': 'bank',
-                'grocery': 'grocery store',
-                'market': 'market',
-                'gym': 'gym',
-                'park': 'park'
-            }
-            
-            # Find the place type from the message
-            for keyword, place in place_mapping.items():
-                if keyword in query_lower:
-                    place_type = place
-                    break
-            
-            # If no specific place type found, use a generic query
-            if not place_type:
-                if 'nearest' in query_lower or 'nearby' in query_lower:
-                    place_type = query.replace('nearest', '').replace('nearby', '').strip()
-                else:
-                    place_type = query
-            
-            logger.info(f"🔍 Finding nearest '{place_type}' for property: {property_data.get('building_name', 'Unknown')}")
-            
-            # Use the location tools to find nearest places
-            result = await self.followup_handler.location_tools.find_nearest_place(
-                property_data, place_type, k=3
-            )
-            
-            # Format and return the response
-            return self.followup_handler.location_tools.format_nearest_places_response(result)
-            
-        except Exception as e:
-            logger.error(f"Nearest place search failed: {str(e)}")
-            return f"I'm sorry, I couldn't find nearby places. Please try again or be more specific about what you're looking for."
-    
-    async def _handle_route_calculation(self, message: str, property_data: Dict[str, Any], followup_result: Dict[str, Any]) -> str:
-        """
-        Handle route calculation queries using the location tools
-        """
-        try:
-            query = followup_result.get('query', message)
-            query_lower = query.lower()
-            
-            # Determine if property is origin or destination
-            is_origin = True  # Default: property is origin
-            destination = ""
-            
-            # Extract destination from the query
-            if 'from' in query_lower and 'to' in query_lower:
-                # Handle "route from X to Y" format
-                parts = query_lower.split('to')
-                if len(parts) >= 2:
-                    destination = parts[-1].strip()
-                    if 'property' not in parts[0] and property_data.get('building_name', '').lower() not in parts[0]:
-                        is_origin = False  # Property is destination
-            elif 'to' in query_lower:
-                # Handle "route to X" format - property is origin
-                destination = query_lower.split('to')[-1].strip()
-                is_origin = True
-            elif 'from' in query_lower:
-                # Handle "route from X" format - property is destination
-                destination = query_lower.split('from')[-1].strip()
-                is_origin = False
-            elif 'how to reach' in query_lower:
-                # Handle "how to reach X" - property is origin, X is destination
-                destination = query_lower.replace('how to reach', '').strip()
-                is_origin = True
-            elif 'how to get' in query_lower:
-                # Handle "how to get to X" - property is origin
-                if 'to' in query_lower:
-                    destination = query_lower.split('to')[-1].strip()
-                else:
-                    destination = query_lower.replace('how to get', '').strip()
-                is_origin = True
-            else:
-                # Extract destination as any location mentioned
-                common_words = ['route', 'direction', 'distance', 'travel', 'time', 'driving', 'walking', 'commute', 'the', 'a', 'an', 'is', 'are', 'what', 'how']
-                words = query.split()
-                destination_words = [word for word in words if word.lower() not in common_words]
-                destination = ' '.join(destination_words) if destination_words else query
-            
-            if not destination:
-                return "Please specify where you'd like to go or come from. For example: 'route to airport' or 'how to reach the mall'."
-            
-            logger.info(f"🗺️ Calculating route: Property '{property_data.get('building_name', 'Unknown')}' {'→' if is_origin else '←'} '{destination}'")
-            
-            # Use the location tools to calculate route
-            result = await self.followup_handler.location_tools.calculate_route(
-                property_data, destination, is_origin=is_origin
-            )
-            
-            # Format and return the response
-            return self.followup_handler.location_tools.format_route_response(result)
-            
-        except Exception as e:
-            logger.error(f"Route calculation failed: {str(e)}")
-            return f"I'm sorry, I couldn't calculate the route. Please try again with a specific destination like 'route to airport' or 'how to reach the mall'."
-    
-    async def _handle_general_followup(self, message: str, property_data: Dict[str, Any], session: ConversationSession) -> str:
-        """
-        Handle general follow-up questions about properties
-        """
-        try:
-            # Generate a contextual response about the property
-            property_info = {
-                'building_name': property_data.get('building_name', 'N/A'),
-                'property_type': property_data.get('property_type', 'N/A'),
-                'bedrooms': property_data.get('bedrooms', 'N/A'),
-                'bathrooms': property_data.get('bathrooms', 'N/A'),
-                'bua_sqft': property_data.get('bua_sqft', 'N/A'),
-                'locality': property_data.get('address', {}).get('locality', 'N/A'),
-                'sale_price_aed': property_data.get('sale_price_aed'),
-                'rent_price_aed': property_data.get('rent_price_aed'),
-                'study': property_data.get('study'),
-                'maid_room': property_data.get('maid_room'),
-                'balconies': property_data.get('balconies'),
-                'covered_parking': property_data.get('covered_parking')
-            }
-            
-            prompt = f"""
-Answer this follow-up question about a specific property: "{message}"
-
-Property Details:
-- Building: {property_info['building_name']}
-- Type: {property_info['property_type']}
-- Bedrooms: {property_info['bedrooms']}
-- Bathrooms: {property_info['bathrooms']}
-- Size: {property_info['bua_sqft']} sqft
-- Location: {property_info['locality']}
-- Price: {property_info.get('sale_price_aed') or property_info.get('rent_price_aed', 'Contact for price')}
-- Study: {property_info['study']}
-- Maid Room: {property_info['maid_room']}
-- Balconies: {property_info['balconies']}
-- Parking: {property_info['covered_parking']}
-
-Generate a helpful, specific answer about this property:
-1. Address the user's question directly
-2. Use relevant property details
-3. Keep it concise and mobile-friendly
-4. Use appropriate emojis
-5. Offer to help with location details or scheduling a visit
-
-Format for WhatsApp with line breaks and emojis.
-"""
-            
-            response = await self.openai.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=400
-            )
-            
-            return response.choices[0].message.content
-            
-        except Exception as e:
-            logger.error(f"General followup failed: {str(e)}")
-            return f"Here are the details for **{property_data.get('building_name', 'this property')}**:\n\n🏠 {property_data.get('bedrooms')}BR/{property_data.get('bathrooms')}BA {property_data.get('property_type')}\n📍 {property_data.get('address', {}).get('locality', 'Dubai')}\n📐 {property_data.get('bua_sqft')} sqft\n\nWould you like location details or to schedule a visit? 🗺️📅" 

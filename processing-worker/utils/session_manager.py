@@ -64,11 +64,20 @@ class SessionManager:
     """
     Manages conversation sessions with in-memory storage
     """
+    _instance = None
+    _sessions = {}
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(SessionManager, cls).__new__(cls)
+        return cls._instance
     
     def __init__(self):
-        self.sessions: Dict[str, ConversationSession] = {}
-        self.session_timeout = int(os.getenv("SESSION_TIMEOUT_HOURS", "24")) * 3600  # 24 hours default
-        logger.info("Session manager initialized with in-memory storage")
+        if not hasattr(self, 'initialized'):
+            self.sessions: Dict[str, ConversationSession] = SessionManager._sessions
+            self.session_timeout = int(os.getenv("SESSION_TIMEOUT_HOURS", "24")) * 3600  # 24 hours default
+            self.initialized = True
+            logger.info("Session manager initialized with in-memory storage")
     
     def get_session(self, user_id: str) -> ConversationSession:
         """
@@ -113,41 +122,31 @@ class SessionManager:
         if session.customer_name:
             return session
         
-        # Try to fetch existing user data and org metadata
+        # Fetch organization metadata (primary source for user data)
         try:
-            from src.services.user_data_service import fetch_and_initialize_user_data
             from src.services.messaging import fetch_org_metadata_internal
             
-            # Fetch user data (existing name, etc.)
-            user_name, context_info = await fetch_and_initialize_user_data(
-                user_id, whatsapp_business_account
-            )
-            
-            if user_name:
-                session.customer_name = user_name
-                session.name_collection_asked = True  # Don't ask again if we have it
-                logger.info(f"📋 [SESSION_INIT] Loaded existing name for {user_id}: {user_name}")
-            
-            # Add context information to session
-            if context_info:
-                session.context.update(context_info)
-                logger.info(f"🔄 [SESSION_INIT] Loaded context for {user_id}: {list(context_info.keys())}")
-            
-            # Fetch organization metadata
+            # Fetch organization metadata - now includes customer_name, properties, etc.
             org_metadata = await fetch_org_metadata_internal(user_id, whatsapp_business_account)
             
             if org_metadata and not org_metadata.get("error"):
+                # Set organization info
                 session.org_id = org_metadata.get("org_id", "")
                 session.org_name = org_metadata.get("org_name", "")
                 logger.info(f"🏢 [SESSION_INIT] Loaded org metadata for {user_id}: {session.org_name} (ID: {session.org_id})")
                 
-                # FALLBACK: If we didn't get user name from database, try from org metadata
-                if not session.customer_name:
-                    org_customer_name = org_metadata.get("customer_name")
-                    if org_customer_name:
-                        session.customer_name = org_customer_name
-                        session.name_collection_asked = True  # Don't ask again
-                        logger.info(f"✅ [SESSION_INIT] Using customer name from org metadata: {org_customer_name}")
+                # Set customer name from org metadata
+                org_customer_name = org_metadata.get("customer_name")
+                if org_customer_name:
+                    session.customer_name = org_customer_name
+                    session.name_collection_asked = True  # Don't ask again if we have it
+                    logger.info(f"✅ [SESSION_INIT] Loaded customer name from org metadata: {org_customer_name}")
+                
+                # Set user properties if available
+                user_properties = org_metadata.get("properties")
+                if user_properties:
+                    session.context['user_properties'] = user_properties
+                    logger.info(f"🏠 [SESSION_INIT] Loaded user properties: {len(user_properties) if isinstance(user_properties, list) else 'N/A'}")
                 
             else:
                 logger.warning(f"⚠️ [SESSION_INIT] Failed to fetch org metadata for {user_id}: {org_metadata.get('error', 'Unknown error')}")
@@ -323,11 +322,13 @@ class SessionManager:
         Check if we should ask for the user's name
         """
         session = self.get_session(user_id)
-        return (
+        should_ask = (
             session.user_question_count >= threshold and
             not session.customer_name and
             not session.name_collection_asked
         )
+        logger.info(f"🤔 [NAME_CHECK] User {user_id}: count={session.user_question_count}, threshold={threshold}, has_name={bool(session.customer_name)}, already_asked={session.name_collection_asked}, should_ask={should_ask}")
+        return should_ask
     
     def mark_name_collection_asked(self, user_id: str, pending_question: str = "") -> None:
         """

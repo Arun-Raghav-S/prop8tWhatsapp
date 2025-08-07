@@ -274,98 +274,66 @@ class PropertyFollowupHandler:
     
     async def detect_followup_intent(self, message: str, has_active_properties: bool) -> Dict[str, Any]:
         """
-        Professional intent detection with spell correction and pattern matching
+        AI-powered follow-up intent detection - much smarter than keyword matching
         """
         if not has_active_properties:
             return {"is_followup": False, "intent": None}
         
         try:
-            # STEP 1: Professional message processing
-            processed = message_processor.process_message(message)
-            corrected_message = processed['corrected']
+            # Use AI to determine if this is a follow-up question and what type
+            followup_prompt = f"""
+You are analyzing whether a user message is a follow-up question about properties they've already seen.
+
+Context: The user has active properties from a previous search.
+User's message: "{message}"
+
+Determine:
+1. Is this a follow-up question about the previously shown properties? (yes/no)
+2. If yes, what type of follow-up intent is it?
+
+Follow-up intent types:
+- "visit" - wants to schedule/book a visit, tour, or viewing
+- "location" - asking about location, address, area, where it is
+- "route" - asking for directions, how to get there, distance, travel time
+- "nearest_place" - asking about nearby amenities (metro, mall, school, etc.)
+- "general" - any other question about the property (features, price, details, why it's special, etc.)
+
+Examples:
+- "what makes this special?" → followup: yes, intent: general
+- "cool what about the amenities?" → followup: yes, intent: general  
+- "where is it located?" → followup: yes, intent: location
+- "can I visit tomorrow?" → followup: yes, intent: visit
+- "how do I get there?" → followup: yes, intent: route
+- "what's nearby?" → followup: yes, intent: nearest_place
+- "show me more properties" → followup: no
+- "I want 3 bedrooms" → followup: no
+
+Respond in this exact JSON format:
+{{"is_followup": true/false, "intent": "intent_type_or_null", "property_reference": "first", "confidence": 0.8}}
+"""
+
+            response = await self.openai.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": followup_prompt}],
+                temperature=0.1,
+                max_tokens=100
+            )
             
-            logger.info(f"🔧 Message processed: '{message}' → '{corrected_message}'")
-            if processed['corrections_made']:
-                logger.info(f"✏️ Corrections: {processed['corrections_made']}")
-            
-            # STEP 2: Fast intent detection using processed message
-            if message_processor.is_booking_message(processed):
-                property_ref = message_processor.extract_property_reference(processed)
-                return {
-                    "is_followup": True,
-                    "intent": "visit",
-                    "property_reference": property_ref or "first",
-                    "confidence": processed['confidence']
-                }
-            
-            # STEP 3: Check for nearest place queries
-            nearest_place_keywords = ['nearest', 'nearby', 'close', 'hospital', 'school', 'restaurant', 'mall', 'airport', 'metro', 'bus', 'pharmacy', 'bank', 'grocery', 'market', 'gym', 'park']
-            if any(keyword in corrected_message.lower() for keyword in nearest_place_keywords):
-                property_ref = message_processor.extract_property_reference(processed)
-                return {
-                    "is_followup": True,
-                    "intent": "nearest_place",
-                    "property_reference": property_ref or "first",
-                    "confidence": processed['confidence'],
-                    "query": corrected_message
-                }
-            
-            # STEP 4: Check for route/direction queries
-            route_keywords = ['route', 'direction', 'how to reach', 'how to get', 'distance', 'travel time', 'driving', 'walking', 'commute']
-            if any(keyword in corrected_message.lower() for keyword in route_keywords):
-                property_ref = message_processor.extract_property_reference(processed)
-                return {
-                    "is_followup": True,
-                    "intent": "route",
-                    "property_reference": property_ref or "first",
-                    "confidence": processed['confidence'],
-                    "query": corrected_message
-                }
-            
-            # STEP 5: Check for general location queries
-            location_keywords = ['where', 'location', 'address', 'area']
-            if any(keyword in corrected_message.lower() for keyword in location_keywords):
-                property_ref = message_processor.extract_property_reference(processed)
-                return {
-                    "is_followup": True,
-                    "intent": "location",
-                    "property_reference": property_ref or "first",
-                    "confidence": processed['confidence']
-                }
-            
-            # STEP 6: General property questions
-            property_keywords = ['price', 'cost', 'features', 'amenities', 'details', 'info', 'tell me']
-            if any(keyword in corrected_message.lower() for keyword in property_keywords):
-                property_ref = message_processor.extract_property_reference(processed)
-                return {
-                    "is_followup": True,
-                    "intent": "general",
-                    "property_reference": property_ref or "first", 
-                    "confidence": processed['confidence']
-                }
-            
-            # STEP 7: Fallback for unclear messages
-            if processed['intent_signals']['has_property_reference']:
-                return {
-                    "is_followup": True,
-                    "intent": "general",
-                    "property_reference": "first",
-                    "confidence": 0.6
-                }
-            
+            import json
+            try:
+                result = json.loads(response.choices[0].message.content.strip())
+                
+                # Add query for route/nearest_place intents
+                if result.get("intent") in ["route", "nearest_place"]:
+                    result["query"] = message
+                    
+                logger.info(f"🤖 AI Follow-up Detection: {result}")
+                return result
+                
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse AI followup response: {response.choices[0].message.content}")
             return {"is_followup": False, "intent": None}
             
         except Exception as e:
-            logger.error(f"Intent detection failed: {str(e)}")
-            
-            # Emergency fallback for booking-like patterns
-            booking_indicators = ['tomorrow', 'tyomorrow', 'am', 'pm', 'schedule', 'book', 'visit']
-            if any(indicator in message.lower() for indicator in booking_indicators):
-                return {
-                    "is_followup": True,
-                    "intent": "visit",
-                    "property_reference": "first",
-                    "confidence": 0.7
-                }
-            
+            logger.error(f"AI followup detection failed: {str(e)}")
             return {"is_followup": False, "intent": None}

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://auth.propzing.com")
 TOOLS_EDGE_FUNCTION_URL = os.getenv("NEXT_PUBLIC_TOOLS_EDGE_FUNCTION_URL", 
-                                   "https://auth.propzing.com/functions/v1/whatsappagent_tools")
+                                   "https://auth.propzing.com/functions/v1/whatsapp_agency_tools")
 
 async def fetch_org_metadata_internal(user_number: str, whatsapp_business_account: str) -> Dict[str, Any]:
     """
@@ -38,9 +38,7 @@ async def fetch_org_metadata_internal(user_number: str, whatsapp_business_accoun
         payload = {
             "action": "fetchOrgMetadata",
             "user_number": user_number,
-            "whatsapp_business_account": whatsapp_business_account,
-            "session_id": f"{user_number}_{whatsapp_business_account}",
-            "chatbot_id": "testdanube"  # Default test orgcode
+            "whatsapp_business_account": whatsapp_business_account
         }
         
         logger.info(f"[fetch_org_metadata_internal] API payload: {payload}")

@@ -41,7 +41,7 @@ If you prefer to set up manually:
    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_key
    AISENSY_BASE_URL=https://backend.aisensy.com
    AISENSY_ACCESS_TOKEN=your_aisensy_token
-   NEXT_PUBLIC_TOOLS_EDGE_FUNCTION_URL=https://auth.propzing.com/functions/v1/whatsappagent_tools
+   NEXT_PUBLIC_TOOLS_EDGE_FUNCTION_URL=https://auth.propzing.com/functions/v1/whatsapp_agency_tools
    ```
 
 4. **Run the test client:**

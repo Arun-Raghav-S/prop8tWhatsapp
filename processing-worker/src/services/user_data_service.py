@@ -74,15 +74,10 @@ class UserDataService:
                 if response.status_code == 200:
                     data = response.json()
                     
-                    # Debug: Log the raw response
-                    logger.info(f"🔍 [USER_DATA] Raw response data: {data}")
-                    logger.info(f"🔍 [USER_DATA] Response type: {type(data)}, Length: {len(data) if isinstance(data, list) else 'N/A'}")
-                    
                     # Supabase returns an array, get first result
                     if data and len(data) > 0:
                         user_record = data[0]
                         logger.info(f"✅ [USER_DATA] Successfully fetched user data for {user_number}")
-                        logger.info(f"🔍 [USER_DATA] First record: {user_record}")
                         
                         # Extract relevant information
                         user_data = {
@@ -98,7 +93,6 @@ class UserDataService:
                         return user_data
                     else:
                         logger.info(f"👤 [USER_DATA] No existing data found for {user_number}")
-                        logger.info(f"🔍 [USER_DATA] Data was: {data}")
                         return None
                         
                 else:

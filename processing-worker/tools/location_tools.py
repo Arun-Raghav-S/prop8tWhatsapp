@@ -18,7 +18,7 @@ class LocationToolsHandler:
     """
     
     def __init__(self):
-        self.api_base_url = "https://auth.propzing.com/functions/v1/whatsappagent_tools"
+        self.api_base_url = "https://auth.propzing.com/functions/v1/whatsapp_agency_tools"
         self.auth_token = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MjUyOTI3ODYsImV4cCI6MjA0MDg2ODc4Nn0.11GJjOlgPf4RocdFjMnWGJpBqFVk1wmbW27OmV0YAzs"
     
     def extract_coordinates_from_address(self, address_data: Dict[str, Any]) -> Optional[tuple]:
