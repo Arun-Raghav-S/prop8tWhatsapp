@@ -323,14 +323,14 @@ class PerformanceOptimizedSearch:
 # Global instance for fast access
 fast_search_engine = PerformanceOptimizedSearch()
 
-async def ultra_fast_property_search(query: str, sale_or_rent: str = None, limit: int = 5) -> str:
+async def ultra_fast_property_search(query: str, sale_or_rent: str = None, limit: int = 15) -> str:
     """
     Public interface for ultra-fast property search
     Target: <1s response time
     """
     return await fast_search_engine.fast_search(query, sale_or_rent, limit)
 
-async def ultra_fast_property_search_with_context(query: str, sale_or_rent: str = None, limit: int = 5) -> tuple:
+async def ultra_fast_property_search_with_context(query: str, sale_or_rent: str = None, limit: int = 15) -> tuple:
     """
     Ultra-fast search that also returns property objects for carousel logic
     Returns: (response_text, property_objects)

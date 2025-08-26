@@ -12,6 +12,8 @@ from utils.logger import setup_logger, log_agent_interaction
 from utils.session_manager import ConversationSession
 from tools.property_search_advanced import PropertySearchAgent as AdvancedPropertySearchAgent
 from tools.fast_statistical_handler import FastStatisticalQueryHandler
+from unified_conversation_engine import unified_engine, ConversationStage
+from optimized_property_search import optimized_search
 
 
 logger = setup_logger(__name__)
@@ -19,36 +21,38 @@ logger = setup_logger(__name__)
 
 class WhatsAppAgentSystem:
     """
-    Multi-agent system that routes conversations to specialized agents
+    Streamlined agent system using unified conversation engine
+    Eliminates multiple conflicting systems for consistent flow
     """
     
     def __init__(self):
         self.openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.advanced_property_agent = AdvancedPropertySearchAgent()
+        
+        # Initialize only essential components
+        self.unified_engine = unified_engine
+        self.optimized_search = optimized_search
         self.fast_statistical_handler = FastStatisticalQueryHandler()
         
-        # Initialize core agents (all context-aware)
-        self.triage_agent = TriageAgent(self.openai)
+        # Keep conversation agent for fallback
         self.conversation_agent = ConversationAgent(self.openai)
-        self.property_search_agent = PropertySearchAgent(self.openai, self.advanced_property_agent)
-        self.statistics_agent = StatisticsAgent(self.openai, self.advanced_property_agent, self.fast_statistical_handler)
         
-        logger.info("WhatsApp Agent System initialized with 4 context-aware agents")
+        logger.info("WhatsApp Agent System initialized with unified conversation engine")
     
     async def process_message(self, message: str, session: ConversationSession) -> str:
         """
-        Main entry point - processes user message through multi-agent system
-        with AI-powered fast path detection
+        STREAMLINED message processing using unified conversation engine
+        Follows your exact conversation flow diagram
         """
-        start_time = time.time()  # Initialize start_time at the beginning
+        start_time = time.time()
         
         try:
-            logger.info(f"🎯 Processing message: {message[:100]}...")
+            logger.info(f"🎯 Processing message: {message[:50]}...")
             
-            # FAST PATH: AI-powered intent classification for statistical queries
+            # STEP 1: Check for statistical queries first (fast path)
             fast_query_type = await self.fast_statistical_handler.can_handle_fast(message)
             if fast_query_type:
-                logger.info(f"🚀 AI FAST PATH activated for: {fast_query_type}")
+                logger.info(f"⚡ FAST PATH: {fast_query_type}")
+                
                 result = await self.fast_statistical_handler.execute_fast_query(fast_query_type, message)
                 response = self.fast_statistical_handler.generate_fast_response(
                     result['results'], 
@@ -57,121 +61,204 @@ class WhatsAppAgentSystem:
                     result.get('sale_or_rent', 'sale')
                 )
                 
-                # Store single property results for follow-up questions
-                if result.get('results') and len(result['results']) == 1:
-                    from utils.session_manager import SessionManager
-                    session_manager = SessionManager()
-                    session_manager.set_active_properties(session.user_id, result['results'])
-                    logger.info(f"🏠 FAST_PATH_STORED: 1 property for follow-up questions for user {session.user_id}")
-                
                 # Log to session
-                session.add_message("user", message, "fast_path", metadata=None, message_type="text")
-                session.add_message("assistant", response, "fast_path", metadata={
-                    "execution_time_ms": result['execution_time_ms'],
-                    "method": result['method'],
-                    "query_type": fast_query_type
-                }, message_type="text")
+                session.add_message("user", message, "fast_statistical", metadata={
+                    "query_type": fast_query_type,
+                    "execution_time_ms": result['execution_time_ms']
+                })
+                session.add_message("assistant", response, "fast_statistical")
                 
                 return response
             
-            # FULL PATH: Regular multi-agent processing for complex queries
-            logger.info("🔄 Using FULL PIPELINE for complex query")
+            # STEP 2: Use unified conversation engine for main flow
+            logger.info("🧠 Using unified conversation engine")
             
-            # Step 1: Determine which agent should handle this message
-            agent_choice = await self.triage_agent.route_message(message, session)
+            # Process through unified conversation engine
+            conv_response = await self.unified_engine.process_message(message, session)
             
-            # Step 2: Route to appropriate agent (ALL agents now have full context)
-            if agent_choice == "conversation":
-                response = await self.conversation_agent.handle_message(message, session)
-            elif agent_choice == "property_search":
-                response = await self.property_search_agent.handle_message(message, session)
-            elif agent_choice == "statistics":
-                response = await self.statistics_agent.handle_message(message, session)
+            # STEP 3: Handle property search if needed
+            if conv_response.should_search_properties and conv_response.search_params:
+                logger.info("🔍 Executing property search")
+                
+                # Execute optimized property search
+                search_results = await self.optimized_search.search_properties(
+                    conv_response.search_params, message
+                )
+                
+                if search_results['properties']:
+                    # Store properties in session for follow-up
+                    session.context['active_properties'] = search_results['properties']
+                    session.context['last_search_params'] = conv_response.search_params
+                    
+                    # CAROUSEL LOGIC: Use carousel for 7+ properties, limit to first 10
+                    if len(search_results['properties']) >= 7:
+                        from tools.whatsapp_carousel_tool import carousel_tool
+                        from utils.whatsapp_formatter import whatsapp_formatter
+                        
+                        logger.info(f"🎠 AUTO_CAROUSEL: {len(search_results['properties'])} properties found (>=7), sending carousel")
+                        
+                        # Extract property IDs - take first 10 properties
+                        limited_properties = search_results['properties'][:10]
+                        property_ids = []
+                        
+                        for i, prop in enumerate(limited_properties):
+                            prop_id = None
+                            
+                            # Handle different property object types
+                            if hasattr(prop, 'original_property_id') and prop.original_property_id:
+                                prop_id = str(prop.original_property_id)
+                                logger.info(f"🆔 Property {i+1}: using original_property_id = {prop_id}")
+                            elif hasattr(prop, 'id') and prop.id:
+                                prop_id = str(prop.id)
+                                logger.info(f"🆔 Property {i+1}: using id = {prop_id}")
+                            elif isinstance(prop, dict):
+                                # Handle dict objects from optimized search
+                                if prop.get('original_property_id'):
+                                    prop_id = str(prop['original_property_id'])
+                                    logger.info(f"🆔 Property {i+1}: using dict original_property_id = {prop_id}")
+                                elif prop.get('id'):
+                                    prop_id = str(prop['id'])
+                                    logger.info(f"🆔 Property {i+1}: using dict id = {prop_id}")
+                                else:
+                                    logger.warning(f"⚠️ Property {i+1}: no ID found in dict: {list(prop.keys())}")
+                            else:
+                                logger.warning(f"⚠️ Property {i+1}: unknown object type: {type(prop)}")
+                            
+                            if prop_id:
+                                property_ids.append(prop_id)
+                            else:
+                                logger.error(f"❌ Property {i+1}: failed to extract ID")
+                        
+                        if len(property_ids) >= 7:
+                            try:
+                                # Send carousel
+                                carousel_result = await carousel_tool.send_property_carousel(
+                                    session.user_id,
+                                    property_ids,
+                                    max_properties=10
+                                )
+                                
+                                if carousel_result['success']:
+                                    logger.info(f"✅ CAROUSEL_SENT: {carousel_result['property_count']} properties")
+                                    
+                                    # Update conversation stage
+                                    session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
+                                    
+                                    # Store limited properties for follow-up queries
+                                    session.context['active_properties'] = limited_properties
+                                    
+                                    # Return simple carousel confirmation message
+                                    response = f"🏠 *Found {len(search_results['properties'])} properties!* I've sent you the first {len(property_ids)} properties as cards with all the details.\n\n📱 Tap *Know More* button to view details or *Schedule Visit* button to book a viewing."
+                                    agent_used = "property_search_optimized_carousel"
+                                    
+                                    logger.info(f"🏠 PROPERTIES_FOUND: {len(search_results['properties'])} properties in {search_results['execution_time_ms']:.0f}ms")
+                                    # Return early to avoid text formatting
+                                    return response
+                                else:
+                                    logger.error(f"❌ Carousel failed: {carousel_result['message']}")
+                                    # Fall through to text response as fallback
+                            except Exception as e:
+                                logger.error(f"❌ Carousel error: {str(e)}")
+                                # Fall through to text response as fallback
+                        else:
+                            logger.warning(f"Not enough property IDs for carousel: {len(property_ids)}")
+                            # Fall through to text response
+                    
+                    # Format properties for WhatsApp (fallback or <7 properties)
+                    properties_text = self.optimized_search.format_properties_for_whatsapp(
+                        search_results['properties'], 
+                        conv_response.requirements.dict()
+                    )
+                    
+                    # Update conversation stage
+                    session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
+                    
+                    response = properties_text
+                    agent_used = "property_search_optimized"
+                    
+                    logger.info(f"🏠 PROPERTIES_FOUND: {len(search_results['properties'])} properties in {search_results['execution_time_ms']:.0f}ms")
+                else:
+                    # No properties found - provide better guidance
+                    session.context['conversation_stage'] = ConversationStage.COLLECTING_REQUIREMENTS
+                    
+                    # Generate helpful no-results response
+                    req = conv_response.requirements
+                    suggestions = []
+                    
+                    if req.budget_min and req.budget_max:
+                        new_max = int(req.budget_max * 1.3)  # Suggest 30% higher budget
+                        suggestions.append(f"• Increase budget to {new_max//1000}k AED")
+                    
+                    if req.location and req.location.lower() in ['marina', 'downtown', 'jbr']:
+                        suggestions.append("• Try nearby areas like JLT, Business Bay, or DIFC")
+                    
+                    if req.bedrooms and req.bedrooms >= 3:
+                        suggestions.append(f"• Consider {req.bedrooms-1} bedroom apartments")
+                    
+                    suggestions_text = "\n".join(suggestions) if suggestions else "• Try adjusting your budget or location\n• Consider different property types"
+                    
+                    response = f"""🔍 No properties found matching your exact criteria.
+
+Here are some suggestions:
+{suggestions_text}
+
+Would you like me to search with adjusted criteria, or would you prefer to modify your requirements?"""
+                    agent_used = "no_results_enhanced"
             else:
-                # Default to conversation agent
-                response = await self.conversation_agent.handle_message(message, session)
+                # Regular conversation response
+                response = conv_response.message
+                agent_used = "unified_conversation"
+                
+                # Update conversation stage in session
+                session.context['conversation_stage'] = conv_response.stage
             
+            # STEP 4: Log conversation to session
             processing_time = (time.time() - start_time) * 1000
             
-            # Log to session
-            session.add_message("user", message, agent_choice, metadata=None, message_type="text")
-            session.add_message("assistant", response, agent_choice, metadata={
-                "processing_time_ms": processing_time,
-                "agent_used": agent_choice
-            }, message_type="text")
+            session.add_message("user", message, agent_used, metadata={
+                "conversation_stage": conv_response.stage.value,
+                "processing_time_ms": processing_time
+            })
+            session.add_message("assistant", response, agent_used, metadata={
+                "requirements_complete": conv_response.requirements.is_complete(),
+                "missing_requirements": conv_response.requirements.get_missing_requirements()
+            })
             
-            # Update session context
-            session.current_agent = agent_choice
-            
-            logger.info(f"✅ RESPONSE_SENT: {agent_choice} agent ({processing_time:.0f}ms) -> {response[:100]}...")
+            logger.info(f"✅ UNIFIED_RESPONSE: {conv_response.stage.value} ({processing_time:.0f}ms) -> {response[:100]}...")
             
             return response
             
         except Exception as e:
-            logger.error(f"Message processing failed: {str(e)}")
-            return "I'm sorry, I encountered an error processing your message. Please try again."
+            logger.error(f"❌ Unified processing failed: {str(e)}")
+            
+            # Fallback to conversation agent for error recovery
+            try:
+                fallback_response = await self.conversation_agent.handle_message(message, session)
+                return fallback_response
+            except Exception as fallback_error:
+                logger.error(f"❌ Fallback also failed: {str(fallback_error)}")
+                return "I apologize for the technical issue. Let me help you find properties. What are you looking for?"
 
 
+# =============================================================================
+# OLD COMPLEX AGENT CLASSES - REPLACED BY UNIFIED CONVERSATION ENGINE
+# Commenting out to reduce complexity and avoid conflicts
+# =============================================================================
+
+"""
+# OLD TRIAGE AGENT - NO LONGER NEEDED
 class TriageAgent:
-    """
-    Agent that determines which specialized agent should handle each message
-    """
-    
     def __init__(self, openai_client: AsyncOpenAI):
         self.openai = openai_client
     
     async def route_message(self, message: str, session: ConversationSession) -> str:
-        """
-        Determine which agent should handle the message
-        """
-        try:
-            # Get conversation context
-            recent_messages = session.conversation_history[-5:] if session.conversation_history else []
-            context_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_messages])
-            
-            triage_prompt = f"""
-You are a triage agent for a real estate WhatsApp bot. Analyze the user's message and determine which specialized agent should handle it.
-
-Recent conversation context:
-{context_text}
-
-User's current message: "{message}"
-
-Available agents:
-1. "conversation" - For greetings, general chat, help requests, casual conversation, AND follow-up questions about previously shown properties
-2. "property_search" - For NEW property searches, finding apartments/villas, specific property queries when they want NEW results
-3. "statistics" - For market analysis, price averages, trends, statistical queries about properties
-
-Rules:
-- If user is asking about properties ALREADY SHOWN in the conversation ("tell me more about this", "what makes it special", "more details", etc.), route to "conversation"
-- If user wants NEW property search ("show me apartments", "find 3BR properties", "properties in Marina"), route to "property_search"
-- If user asks for pure statistics (average prices, market trends) WITHOUT wanting specific properties, route to "statistics"
-- For greetings, casual chat, help requests, route to "conversation"
-- When unclear, prefer "conversation" for follow-ups or "property_search" for new searches
-
-Respond with only one word: conversation, property_search, or statistics
+        # OLD TRIAGE LOGIC - REPLACED BY UNIFIED ENGINE
+        pass
 """
-            
-            response = await self.openai.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": triage_prompt}],
-                temperature=0.1,
-                max_tokens=10
-            )
-            
-            agent_choice = response.choices[0].message.content.strip().lower()
-            
-            # Validate response
-            if agent_choice not in ["conversation", "property_search", "statistics"]:
-                logger.warning(f"Invalid agent choice: {agent_choice}, defaulting to conversation")
-                agent_choice = "conversation"
-            
-            logger.info(f"🔀 AGENT_ROUTED: {agent_choice} for: '{message[:50]}...'")
-            return agent_choice
-            
-        except Exception as e:
-            logger.error(f"Triage routing failed: {str(e)}")
-            return "conversation"
+
+# =============================================================================
+# ALL OLD AGENT CLASSES COMMENTED OUT - USING UNIFIED CONVERSATION ENGINE
+# =============================================================================
 
 
 class ConversationAgent:
@@ -290,7 +377,16 @@ Respond naturally and contextually."""
         if active_properties:
             context_parts.append(f"\nCurrently shown properties ({len(active_properties)}):")
             for i, prop in enumerate(active_properties[:3], 1):  # Show up to 3 properties
-                prop_summary = f"Property {i}: {prop.get('bedrooms', '?')}BR {prop.get('property_type', 'Property')} in {prop.get('address', {}).get('locality', 'Dubai')}"
+                # Safely get address info
+                address = prop.get('address', {})
+                if isinstance(address, str):
+                    try:
+                        import json
+                        address = json.loads(address)
+                    except:
+                        address = {}
+                locality = address.get('locality', 'Dubai') if isinstance(address, dict) else 'Dubai'
+                prop_summary = f"Property {i}: {prop.get('bedrooms', '?')}BR {prop.get('property_type', 'Property')} in {locality}"
                 if prop.get('sale_price_aed'):
                     prop_summary += f" - AED {prop['sale_price_aed']:,}"
                 elif prop.get('rent_price_aed'): 
@@ -358,70 +454,206 @@ class PropertySearchAgent:
         self.formatter = whatsapp_formatter
     
     def _update_clarification_context(self, session: ConversationSession, user_message: str, clarification_type: str):
-        """Update session context to track clarification progress"""
+        """Update session context to track clarification progress - NEW FLOW"""
         # Initialize clarification context if not exists
         if 'clarification' not in session.context:
             session.context['clarification'] = {}
         
         clarification_context = session.context['clarification']
-        
-        # Track what user is answering
         message_lower = user_message.lower().strip()
         
-        if clarification_type == 'buy_rent':
-            # Mark that we've asked the buy/rent question
-            clarification_context['asked_buy_rent'] = True
+        # Handle different clarification types based on new flow
+        if clarification_type == 'initial_collection':
+            # Parse combined initial response (buy/rent, location, budget)
+            self._parse_initial_collection(message_lower, clarification_context)
             
-            # Check if they're answering with buy/rent info
-            buy_rent_answers = ['buy', 'rent', 'sale', 'rental', 'purchase', 'buying', 'renting']
-            if any(answer in message_lower for answer in buy_rent_answers):
-                clarification_context['answered_buy_rent'] = True
+        elif clarification_type == 'complete_initial_info':
+            # Parse additional information to complete initial collection
+            self._parse_initial_collection(message_lower, clarification_context)
+            
+        elif clarification_type == 'buy_ready_off_plan':
+            # Mark that we've asked the ready/off-plan question
+            clarification_context['asked_detailed_preference'] = True
+            
+            # Check if they're answering
+            if any(word in message_lower for word in ['ready', 'move-in', 'completed']):
+                clarification_context['answered_detailed_preference'] = True
+                clarification_context['ready_or_off_plan'] = 'ready'
+            elif any(word in message_lower for word in ['off-plan', 'off plan', 'construction', 'under construction']):
+                clarification_context['answered_detailed_preference'] = True
+                clarification_context['ready_or_off_plan'] = 'off_plan'
                 
-                # Extract their preference
-                if any(word in message_lower for word in ['buy', 'sale', 'purchase', 'buying']):
-                    clarification_context['preferred_type'] = 'sale'
-                elif any(word in message_lower for word in ['rent', 'rental', 'renting']):
-                    clarification_context['preferred_type'] = 'rent'
-        
-        elif clarification_type == 'property_type':
+        elif clarification_type == 'rent_duration':
+            # Mark that we've asked the duration question
+            clarification_context['asked_detailed_preference'] = True
+            
+            # Extract duration information
+            import re
+            duration_match = re.search(r'(\d+)\s*(month|months|year|years)', message_lower)
+            if duration_match:
+                clarification_context['answered_detailed_preference'] = True
+                clarification_context['rent_duration'] = duration_match.group(0)
+            elif any(word in message_lower for word in ['long term', 'longterm', 'permanent']):
+                clarification_context['answered_detailed_preference'] = True
+                clarification_context['rent_duration'] = 'long_term'
+                
+        elif clarification_type == 'property_type_detailed':
             # Mark that we've asked the property type question
             clarification_context['asked_property_type'] = True
             
-            # Check if they're answering with property type info
-            property_types = ['villa', 'apartment', 'flat', 'townhouse', 'penthouse', 'studio', 'plot', 'building']
-            if any(ptype in message_lower for ptype in property_types):
+            # Check for property types with bedroom info
+            if any(word in message_lower for word in ['villa']):
                 clarification_context['answered_property_type'] = True
+                clarification_context['preferred_property_type'] = 'villa'
+            elif any(word in message_lower for word in ['studio']):
+                clarification_context['answered_property_type'] = True
+                clarification_context['preferred_property_type'] = 'studio'
+                clarification_context['preferred_bedrooms'] = 0
+            elif any(word in message_lower for word in ['townhouse']):
+                clarification_context['answered_property_type'] = True
+                clarification_context['preferred_property_type'] = 'townhouse'
+            elif any(word in message_lower for word in ['penthouse']):
+                clarification_context['answered_property_type'] = True
+                clarification_context['preferred_property_type'] = 'penthouse'
                 
-                # Extract their preference
-                for ptype in property_types:
-                    if ptype in message_lower:
-                        clarification_context['preferred_property_type'] = ptype
-                        break
+            # Check for bedroom numbers (use "beds" not "bhk")
+            import re
+            bedroom_match = re.search(r'(\d+)\s*(bed|beds|bedroom|bedrooms)', message_lower)
+            if bedroom_match:
+                clarification_context['answered_property_type'] = True
+                clarification_context['preferred_bedrooms'] = int(bedroom_match.group(1))
+                clarification_context['preferred_property_type'] = 'apartment'
         
         # Update session
         from utils.session_manager import SessionManager
         session_manager = SessionManager()
         session_manager.update_session(session.user_id, session)
     
+    def _parse_initial_collection(self, message_lower: str, clarification_context: dict):
+        """Parse initial collection message for buy/rent, location, budget, property type"""
+        
+        # Parse buy/rent preference
+        if any(word in message_lower for word in ['buy', 'sale', 'purchase', 'buying']):
+            clarification_context['answered_buy_rent'] = True
+            clarification_context['preferred_type'] = 'sale'
+        elif any(word in message_lower for word in ['rent', 'rental', 'renting']):
+            clarification_context['answered_buy_rent'] = True
+            clarification_context['preferred_type'] = 'rent'
+            
+        # Parse location (look for common Dubai areas)
+        dubai_areas = [
+            'dubai marina', 'marina', 'downtown dubai', 'downtown', 'jbr', 
+            'jumeirah beach residence', 'business bay', 'jlt', 'jumeirah lakes towers',
+            'palm jumeirah', 'palm', 'deira', 'bur dubai', 'sheikh zayed road',
+            'dubai hills', 'arabian ranches', 'jumeirah', 'al barsha', 'tecom',
+            'difc', 'dubai international financial centre', 'dubai south',
+            'dubai investment park', 'dip', 'jvc', 'jumeirah village circle',
+            'dubai sports city', 'motor city', 'studio city', 'internet city',
+            'media city', 'knowledge village', 'academic city', 'silicon oasis'
+        ]
+        
+        for area in dubai_areas:
+            if area in message_lower:
+                clarification_context['answered_location'] = True
+                clarification_context['preferred_location'] = area
+                break
+                
+        # Parse budget (look for numbers with k, thousand, million, etc.)
+        import re
+        budget_patterns = [
+            r'(\d+)\s*(?:k|thousand)',  # 100k, 100 thousand
+            r'(\d+)\s*(?:m|million)',   # 1m, 1 million  
+            r'(\d+)\s*(?:-|to)\s*(\d+)\s*(?:k|thousand)',  # 80-100k
+            r'(\d+)\s*(?:-|to)\s*(\d+)\s*(?:m|million)',   # 1-2m
+            r'(\d{1,3}(?:,\d{3})*)',    # 100,000
+        ]
+        
+        for pattern in budget_patterns:
+            if re.search(pattern, message_lower):
+                clarification_context['answered_budget'] = True
+                clarification_context['budget_text'] = re.search(pattern, message_lower).group(0)
+                break
+                
+        # Parse property type (NEW - critical for flow compliance)
+        if any(word in message_lower for word in ['villa', 'villas']):
+            clarification_context['answered_property_type'] = True
+            clarification_context['preferred_property_type'] = 'villa'
+        elif any(word in message_lower for word in ['studio']):
+            clarification_context['answered_property_type'] = True
+            clarification_context['preferred_property_type'] = 'studio'
+        elif any(word in message_lower for word in ['townhouse', 'townhouses']):
+            clarification_context['answered_property_type'] = True
+            clarification_context['preferred_property_type'] = 'townhouse'
+        elif any(word in message_lower for word in ['penthouse', 'penthouses']):
+            clarification_context['answered_property_type'] = True
+            clarification_context['preferred_property_type'] = 'penthouse'
+        elif any(word in message_lower for word in ['plot', 'plots']):
+            clarification_context['answered_property_type'] = True
+            clarification_context['preferred_property_type'] = 'plot'
+            
+        # Check for bedroom numbers (use "beds" not "bhk" as per flow requirement)
+        bedroom_match = re.search(r'(\d+)\s*(bed|beds|bedroom|bedrooms)', message_lower)
+        if bedroom_match:
+            clarification_context['answered_property_type'] = True
+            clarification_context['preferred_bedrooms'] = int(bedroom_match.group(1))
+            clarification_context['preferred_property_type'] = 'apartment'
+    
+    def _update_intelligent_context(self, session: ConversationSession, intent, message: str):
+        """Update session context with AI-extracted information"""
+        # Store the AI analysis in session context
+        session.context['last_intent'] = intent.intent
+        session.context['last_confidence'] = intent.confidence_score
+        session.context['conversation_stage'] = intent.stage
+        
+        # Update session with AI-extracted requirements
+        if intent.requirements:
+            req = intent.requirements
+            session.context['ai_requirements'] = {
+                'transaction_type': req.transaction_type,
+                'location': req.location,
+                'budget_min': req.budget_min,
+                'budget_max': req.budget_max,
+                'property_type': req.property_type,
+                'bedrooms': req.bedrooms,
+                'bathrooms': req.bathrooms,
+                'special_features': req.special_features
+            }
+        
+        # Update session in session manager
+        from utils.session_manager import SessionManager
+        session_manager = SessionManager()
+        session_manager.update_session(session.user_id, session)
+        
+        logger.info(f"🔄 Updated session context with AI analysis for {session.user_id}")
+    
+    def _is_direct_query(self, message: str) -> bool:
+        """Check if this is a direct specific query that can bypass clarification"""
+        message_lower = message.lower().strip()
+        
+        # Direct queries that should show results immediately
+        direct_query_patterns = [
+            'cheapest', 'most expensive', 'largest', 'smallest',
+            'show me', 'find me', 'what is the', 'where is the',
+            'villa in', 'apartment in', 'property in', 'properties in',
+            'studio', 'penthouse', '1 bedroom', '2 bedroom', '3 bedroom', '4 bedroom',
+            '1 bed', '2 beds', '3 beds', '4 beds',
+            'under', 'above', 'below', 'between'
+        ]
+        
+        return any(pattern in message_lower for pattern in direct_query_patterns)
+    
     async def handle_message(self, message: str, session: ConversationSession) -> str:
         """
-        Handle property search requests using advanced search
+        Handle property search requests using AI-native conversation understanding
         """
         try:
-            # Create user context for the advanced agent, including clarification state
-            clarification_context = session.context.get('clarification', {})
-            user_context = {
-                'user_id': session.user_id,
-                'active_properties_count': len(session.context.get('active_properties', [])),
-                'last_search_type': session.current_agent,
-                'answered_buy_rent': clarification_context.get('answered_buy_rent', False),
-                'answered_property_type': clarification_context.get('answered_property_type', False),
-                'preferred_type': clarification_context.get('preferred_type'),
-                'preferred_property_type': clarification_context.get('preferred_property_type')
-            }
+            # 🧠 AI-NATIVE APPROACH: Use intelligent conversation manager
+            current_stage = session.context.get('conversation_stage', ConversationStage.INITIAL)
+            conversation_history = session.conversation_history or []
             
-            # Execute advanced property search with context
-            search_result = await self.advanced_property_agent.process_query(message, user_context)
+                        # LEGACY CODE BLOCK - REPLACED BY UNIFIED ENGINE ABOVE
+            # All this logic is now handled by the streamlined process_message method
+            return "This legacy code path should not be reached - unified engine handles all conversations"
             
             # Store active properties in session if we have results
             if search_result.context and len(search_result.context) > 0:
@@ -444,15 +676,15 @@ class PropertySearchAgent:
             # Handle clarification requests with session tracking
             if hasattr(search_result, 'requires_clarification') and search_result.requires_clarification:
                 # Track clarification state in session
-                clarification_type = search_result.industrial_features.get('clarification_type', 'unknown')
+                clarification_type = search_result.debug.get('clarification_type', 'unknown') if search_result.debug else 'unknown'
                 self._update_clarification_context(session, message, clarification_type)
                 return search_result.clarification_message
             
-            # SIMPLE RULE: If 7+ properties found → ALWAYS send carousel
-            if search_result.context and len(search_result.context) >= 7:
+            # NEW CAROUSEL LOGIC: Use carousel for 7-10 properties only
+            if search_result.context and 7 <= len(search_result.context) <= 10:
                 from tools.whatsapp_carousel_tool import carousel_tool
                 
-                logger.info(f"🎠 AUTO_CAROUSEL: {len(search_result.context)} properties found (>=7), sending carousel")
+                logger.info(f"🎠 CAROUSEL_RANGE: {len(search_result.context)} properties (7-10), attempting carousel")
                 
                 # Extract property IDs
                 property_ids = []
@@ -462,25 +694,40 @@ class PropertySearchAgent:
                     elif hasattr(prop, 'id') and prop.id:
                         property_ids.append(str(prop.id))
                 
-                if len(property_ids) >= 7:
-                    try:
-                        # Send carousel
-                        carousel_result = await carousel_tool.send_property_carousel(
-                            session.user_id,
-                            property_ids,
-                            max_properties=10
-                        )
+                try:
+                    # Send carousel - but with fallback to text if API fails
+                    carousel_result = await carousel_tool.send_property_carousel(
+                        session.user_id,
+                        property_ids,
+                        max_properties=10
+                    )
+                    
+                    if carousel_result['success']:
+                        # Store properties for "view more" functionality  
+                        properties_data = [
+                            {
+                                'id': prop.id,
+                                'original_property_id': getattr(prop, 'original_property_id', None),
+                                'property_type': getattr(prop, 'property_type', 'Unknown'),
+                                'bedrooms': getattr(prop, 'bedrooms', 0),
+                                'sale_price_aed': getattr(prop, 'sale_price_aed', None),
+                                'rent_price_aed': getattr(prop, 'rent_price_aed', None),
+                                'address': getattr(prop, 'address', {}),
+                                'building_name': getattr(prop, 'building_name', ''),
+                                'bua_sqft': getattr(prop, 'bua_sqft', None)
+                            }
+                            for prop in search_result.context
+                        ]
+                        session_manager.set_active_properties(session.user_id, properties_data)
                         
-                        if carousel_result['success']:
-                            logger.info(f"✅ CAROUSEL_SENT: {carousel_result['property_count']} properties")
-                            # Simple 1-line response
-                            return self.formatter.format_carousel_sent_response(carousel_result['property_count'])
-                        else:
-                            logger.error(f"❌ Carousel failed: {carousel_result['message']}")
-                            # Continue to text response as fallback
-                    except Exception as e:
-                        logger.error(f"❌ Carousel error: {str(e)}")
-                        # Continue to text response as fallback
+                        logger.info(f"✅ CAROUSEL_SENT: {carousel_result['property_count']} properties")
+                        return "Here are some great properties for you! 🏠\n\n*Tap 'View More' on any property for detailed information*"
+                    else:
+                        logger.error(f"❌ Carousel failed: {carousel_result['message']}")
+                        # Fall through to text response
+                except Exception as e:
+                    logger.error(f"❌ Carousel error: {str(e)}")
+                    # Fall through to text response
             
             # For <7 properties or carousel failure, use normal text response
             

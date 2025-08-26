@@ -1,0 +1,3 @@
+# Test dependencies for WhatsApp Agent Flow Emulator
+httpx>=0.24.0
+asyncio-test>=0.3.0

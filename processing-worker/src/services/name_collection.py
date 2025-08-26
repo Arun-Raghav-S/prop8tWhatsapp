@@ -86,9 +86,9 @@ Examples:
             Formatted message asking for name
         """
         if context:
-            return f"Hi there! 👋 Before I help you with {context}, may I know your name please? 😊"
+            return f"Before I help you with {context}, may I know your name please?"
         else:
-            return "Hi there! 👋 May I know your name so I can assist you better? 😊"
+            return "May I know your name please?"
     
     def generate_name_confirmation_message(self, name: str, pending_question: str = "") -> str:
         """
@@ -106,6 +106,7 @@ Examples:
             if "surprise" in pending_question.lower():
                 return f"Got it, {name}! I'd be happy to help! Are you looking to *buy* or *rent* a property? This will help me show you the most relevant options. 🏠"
             else:
+                # This is now only used as fallback since main.py handles property queries directly
                 return f"Got it, {name}! Now, about your question: {pending_question}. How can I help you with that?"
         else:
             return f"Got it, {name}! 😊 How can I help you today?"

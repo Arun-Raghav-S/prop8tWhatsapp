@@ -161,60 +161,112 @@ class AdvancedPropertySearchAgent:
     
     def _needs_clarification(self, user_query: str, extracted_params: QueryParams, user_context: Dict = None) -> Dict[str, Any]:
         """
-        Enhanced clarification logic based on user flowchart:
-        1. First ask buy/rent to cut search space
-        2. Then ask property type (villa, apartment, etc.)
-        3. Show carousel only after clarifying questions for general queries
+        NEW CLARIFICATION FLOW based on user flowchart:
+        1. Initial Greeting: Ask buy/rent, location, budget 
+        2. After initial search: If too many properties → detailed clarification
+        3. Detailed clarification: ready/off-plan (buy) or months (rent) + property type
+        4. Show carousel after clarifications complete
         """
         user_context = user_context or {}
         query_lower = user_query.lower().strip()
         
-        # Check if user has answered buy/rent question
-        answered_buy_rent = user_context.get('answered_buy_rent', False)
-        answered_property_type = user_context.get('answered_property_type', False)
+        # Get clarification context from user session
+        clarification = user_context.get('clarification', {})
         
-        # Very basic queries that need clarification
-        very_basic_queries = ['properties', 'property', 'show me properties', 'find properties', 'list properties']
-        is_very_basic = query_lower in very_basic_queries or query_lower == 'hi' or query_lower == 'hello'
+        # Check what we've already collected
+        has_buy_rent = clarification.get('answered_buy_rent', False)
+        has_location = clarification.get('answered_location', False) 
+        has_budget = clarification.get('answered_budget', False)
+        has_detailed_preference = clarification.get('answered_detailed_preference', False)
+        has_property_type = clarification.get('answered_property_type', False)
         
-        # General queries that could benefit from clarification
-        general_query_keywords = [
-            'properties', 'property', 'show me', 'list', 'all properties', 
-            'what properties', 'available properties', 'good properties', 
-            'tell me about properties', 'find me properties'
+        # Identify greeting/initial queries - EXPANDED to include apartment searches
+        greeting_queries = [
+            'hi', 'hello', 'hey', 'start', 'help', 'properties', 'property', 
+            'show me properties', 'find properties', 'list properties',
+            'what properties', 'available properties', 'good properties',
+            # CRITICAL: Add apartment/property search queries to trigger clarification
+            'looking for apartments', 'looking for some apartments', 'looking for properties',
+            'i am looking for', 'looking for a property', 'looking for an apartment',
+            'want apartments', 'need apartments', 'want properties', 'need properties',
+            'find apartments', 'find me apartments', 'show me apartments',
+            'apartments', 'villas', 'townhouses', 'penthouses'
         ]
-        is_general_query = any(keyword in query_lower for keyword in general_query_keywords)
+        is_greeting = any(greeting in query_lower for greeting in greeting_queries)
         
-        # Check if user is answering buy/rent question
-        buy_rent_answers = ['buy', 'rent', 'sale', 'rental', 'purchase', 'buying', 'renting']
-        is_buy_rent_answer = any(answer in query_lower for answer in buy_rent_answers)
-        
-        # Check if user is answering property type question
-        property_types = ['villa', 'apartment', 'flat', 'townhouse', 'penthouse', 'studio', 'plot', 'building']
-        is_property_type_answer = any(ptype in query_lower for ptype in property_types)
-        
-        # Flow logic based on flowchart
-        if is_very_basic and not answered_buy_rent:
+        # STEP 1: Initial greeting - collect buy/rent, location, budget, property type
+        if is_greeting and not (has_buy_rent and has_location and has_budget and has_property_type):
             return {
                 'needs_clarification': True,
-                'clarification_type': 'buy_rent',
-                'message': "Hi there! 👋 Are you looking to *buy* or *rent* a property? This will help me find the best options for you! 🏠"
+                'clarification_type': 'initial_collection',
+                'message': "Hi there! 👋 I'll help you find the perfect property! \n\nTo get started, please tell me:\n\n🏠 Are you looking to *buy* or *rent*?\n📍 Which area/location are you interested in?\n💰 What's your budget range?\n🏡 Property type (villa, 2 beds, 3 beds etc. - don't say bhk, say beds)\n\nExample: 'I want to rent in Dubai Marina, budget 80-100k, 2 beds apartment'"
             }
         
-        if is_buy_rent_answer and not answered_property_type:
+        # STEP 2: Check if we have enough initial info to search - REQUIRE ALL 4 PIECES
+        if has_buy_rent and has_location and has_budget and has_property_type:
+            # We have all basic info - let the search proceed normally
+            # The detailed clarification will happen if too many results are found
+            return {'needs_clarification': False}
+        
+        # STEP 3: If user partially answered initial questions, guide them
+        if any([has_buy_rent, has_location, has_budget, has_property_type]) and not all([has_buy_rent, has_location, has_budget, has_property_type]):
+            missing_items = []
+            if not has_buy_rent:
+                missing_items.append("🏠 Buy or rent?")
+            if not has_location:
+                missing_items.append("📍 Location/area?")
+            if not has_budget:
+                missing_items.append("💰 Budget range?")
+            if not has_property_type:
+                missing_items.append("🏡 Property type (villa, 2 beds, 3 beds etc.)?")
+                
             return {
                 'needs_clarification': True,
-                'clarification_type': 'property_type',
-                'message': "Great! What type of property are you interested in? 🏠\n\n• Villa 🏘️\n• Apartment 🏢\n• Townhouse 🏡\n• Penthouse 🌟\n• Studio 📐\n• Plot 🏗️\n\nOr tell me how many bedrooms you need (e.g., '2 beds', '3 bedrooms')!"
+                'clarification_type': 'complete_initial_info',
+                'message': f"Great start! I still need:\n\n{chr(10).join(missing_items)}\n\nPlease provide the missing information!"
             }
         
-        if is_general_query and not extracted_params.sale_or_rent and not answered_buy_rent:
+        return {'needs_clarification': False}
+    
+    def _needs_detailed_clarification(self, user_query: str, extracted_params: QueryParams, user_context: Dict = None, property_count: int = 0) -> Dict[str, Any]:
+        """
+        DETAILED CLARIFICATION FLOW - Called when too many properties found
+        Implements the specific clarification flow from the flowchart
+        """
+        user_context = user_context or {}
+        query_lower = user_query.lower().strip()
+        
+        # Get clarification context
+        clarification = user_context.get('clarification', {})
+        preferred_type = clarification.get('preferred_type', 'sale')  # buy/rent preference
+        
+        # Check what detailed info we have
+        has_detailed_preference = clarification.get('answered_detailed_preference', False)
+        has_property_type = clarification.get('answered_property_type', False)
+        
+        # STEP 1: Ask buy-specific or rent-specific questions
+        if not has_detailed_preference:
+            if preferred_type == 'sale':
+                return {
+                    'needs_clarification': True,
+                    'clarification_type': 'buy_ready_off_plan',
+                    'message': f"I found {property_count} properties for you! Let me narrow it down:\n\n🏗️ Are you looking for:\n• *Ready* properties (move-in ready)\n• *Off-plan* properties (under construction)\n\nWhich do you prefer?"
+                }
+            else:  # rent
+                return {
+                    'needs_clarification': True,
+                    'clarification_type': 'rent_duration',
+                    'message': f"I found {property_count} properties for you! Let me narrow it down:\n\n📅 How many months are you looking to rent for?\n\nExample: '12 months', '6 months', 'long term'"
+                }
+        
+        # STEP 2: Ask property type (after ready/off-plan or duration)
+        if has_detailed_preference and not has_property_type:
             return {
                 'needs_clarification': True,
-                'clarification_type': 'buy_rent',
-                'message': "I'd be happy to help! Are you looking to *buy* or *rent* a property? This will help me show you the most relevant options. 🏠"
+                'clarification_type': 'property_type_detailed',
+                'message': "Perfect! Now, what type of property are you interested in?\n\n🏠 Property types:\n• Villa\n• 2 beds apartment\n• 3 beds apartment \n• 4 beds apartment\n• Studio\n• Townhouse\n• Penthouse\n\nOr tell me: How many beds do you need?"
             }
-            
+        
         return {'needs_clarification': False}
     
     async def process_query(self, user_query: str, user_context: Dict = None) -> AgentResponse:
@@ -290,24 +342,86 @@ class AdvancedPropertySearchAgent:
         except Exception as e:
             logger.warning(f"Template check failed, using full pipeline: {e}")
 
-        # STEP 5: Check for enhanced clarification needs
-        # Quick synthesis to check if we need clarification
-        quick_params = QueryParams(query_text=normalized_query)
-        clarification_check = self._needs_clarification(normalized_query, quick_params, user_context)
-        
-        if clarification_check['needs_clarification']:
-            return AgentResponse(
-                answer=clarification_check['message'],
-                context=[],
-                extracted_params=quick_params,
-                execution_time=(time.time() - start_time),
-                requires_clarification=True,
-                clarification_message=clarification_check['message'],
-                industrial_features={'enhanced_clarification': True, 'clarification_type': clarification_check['clarification_type']}
+        # STEP 5: Check if AI has already extracted parameters (skip old clarification system)
+        if user_context and user_context.get('ai_extracted_params'):
+            logger.info("🧠 Using AI-extracted parameters, bypassing old clarification system")
+            ai_params = user_context['ai_extracted_params']
+            
+            # Convert AI parameters to QueryParams
+            extracted_params = QueryParams(
+                query_text=normalized_query,
+                sale_or_rent=ai_params.get('sale_or_rent'),
+                property_type=ai_params.get('property_type'),
+                bedrooms=ai_params.get('bedrooms'),
+                bathrooms=ai_params.get('bathrooms'),
+                locality=ai_params.get('locality'),
+                min_sale_price_aed=ai_params.get('min_sale_price_aed'),
+                max_sale_price_aed=ai_params.get('max_sale_price_aed'),
+                min_rent_price_aed=ai_params.get('min_rent_price_aed'),
+                max_rent_price_aed=ai_params.get('max_rent_price_aed'),
+                study=ai_params.get('study'),
+                maid_room=ai_params.get('maid_room'),
+                landscaped_garden=ai_params.get('landscaped_garden'),
+                park_pool_view=ai_params.get('park_pool_view')
             )
+        else:
+            # FALLBACK: Check for initial clarification needs (buy/rent, location, budget)
+            quick_params = QueryParams(query_text=normalized_query)
+            clarification_check = self._needs_clarification(normalized_query, quick_params, user_context)
+            
+            if clarification_check['needs_clarification']:
+                return AgentResponse(
+                    answer=clarification_check['message'],
+                    context=[],
+                    extracted_params=quick_params,
+                    execution_time=(time.time() - start_time),
+                    requires_clarification=True,
+                    clarification_message=clarification_check['message'],
+                    industrial_features={'enhanced_clarification': True},
+                    debug={'clarification_type': clarification_check['clarification_type']}
+                )
+            
+            # Use traditional synthesis if no AI params
+            extracted_params = await self.synthesize_query(normalized_query)
 
-        # STEP 6: Full pipeline for complex queries
-        return await self._continue_full_pipeline(normalized_query, start_time, user_context)
+        # STEP 6: Execute search with extracted parameters (AI or traditional)
+        search_results, industrial_features = await self.execute_query(extracted_params, normalized_query)
+        
+        # NEW FLOW: Check if we need detailed clarification based on result count
+        if search_results and len(search_results) > 15:  # Too many properties
+            detailed_clarification = self._needs_detailed_clarification(
+                normalized_query, 
+                extracted_params, 
+                user_context, 
+                property_count=len(search_results)
+            )
+            
+            if detailed_clarification['needs_clarification']:
+                return AgentResponse(
+                    answer=detailed_clarification['message'],
+                    context=[],
+                    extracted_params=extracted_params,
+                    execution_time=(time.time() - start_time),
+                    requires_clarification=True,
+                    clarification_message=detailed_clarification['message'],
+                    industrial_features={'detailed_clarification': True},
+                    debug={'clarification_type': detailed_clarification['clarification_type']}
+                )
+        
+        # STEP 7: Generate response with results
+        if search_results and len(search_results) >= 7:
+            # Show carousel for 7+ properties (but not if too many and clarification needed)
+            industrial_features['show_carousel'] = True
+        
+        answer = await self.generate_answer(normalized_query, extracted_params, search_results, industrial_features)
+        
+        return AgentResponse(
+            answer=answer,
+            context=search_results,
+            extracted_params=extracted_params,
+            execution_time=(time.time() - start_time),
+            industrial_features=industrial_features
+        )
 
     def _should_use_fast_engine(self, query: str) -> bool:
         """

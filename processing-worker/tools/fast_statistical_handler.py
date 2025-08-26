@@ -44,7 +44,7 @@ class FastStatisticalQueryHandler:
         # Statistical query types that can be fast-tracked
         self.statistical_operations = {
             # BASIC PRICE QUERIES
-            'cheapest': {'sort': 'price_asc', 'limit': 1},
+            'cheapest': {'sort': 'price_asc', 'limit': 5},
             'most_expensive': {'sort': 'price_desc', 'limit': 1},
             
             # SIZE QUERIES
@@ -52,16 +52,16 @@ class FastStatisticalQueryHandler:
             'smallest': {'sort': 'size_asc', 'limit': 1},
             
             # BEDROOM-SPECIFIC QUERIES
-            'cheapest_1br': {'sort': 'price_asc', 'limit': 1, 'bedrooms': 1},
-            'cheapest_2br': {'sort': 'price_asc', 'limit': 1, 'bedrooms': 2},
-            'cheapest_3br': {'sort': 'price_asc', 'limit': 1, 'bedrooms': 3},
-            'cheapest_4br': {'sort': 'price_asc', 'limit': 1, 'bedrooms': 4},
+            'cheapest_1br': {'sort': 'price_asc', 'limit': 5, 'bedrooms': 1},
+            'cheapest_2br': {'sort': 'price_asc', 'limit': 5, 'bedrooms': 2},
+            'cheapest_3br': {'sort': 'price_asc', 'limit': 5, 'bedrooms': 3},
+            'cheapest_4br': {'sort': 'price_asc', 'limit': 5, 'bedrooms': 4},
             
             # PROPERTY TYPE SPECIFIC
-            'cheapest_apartment': {'sort': 'price_asc', 'limit': 1, 'property_type': 'Apartment'},
-            'cheapest_villa': {'sort': 'price_asc', 'limit': 1, 'property_type': 'Villa'},
-            'cheapest_townhouse': {'sort': 'price_asc', 'limit': 1, 'property_type': 'Townhouse'},
-            'cheapest_penthouse': {'sort': 'price_asc', 'limit': 1, 'property_type': 'Penthouse'},
+            'cheapest_apartment': {'sort': 'price_asc', 'limit': 10, 'property_type': 'Apartment'},
+            'cheapest_villa': {'sort': 'price_asc', 'limit': 5, 'property_type': 'Villa'},
+            'cheapest_townhouse': {'sort': 'price_asc', 'limit': 5, 'property_type': 'Townhouse'},
+            'cheapest_penthouse': {'sort': 'price_asc', 'limit': 5, 'property_type': 'Penthouse'},
             
             # AREA-SPECIFIC QUERIES
             'cheapest_in_area': {'sort': 'price_asc', 'limit': 1, 'location_filter': True},

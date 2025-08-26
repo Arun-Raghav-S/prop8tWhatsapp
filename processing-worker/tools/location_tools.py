@@ -25,6 +25,7 @@ class LocationToolsHandler:
         """
         Extract latitude and longitude from address JSON field
         Returns tuple (lat, lng) or None if not found
+        Supports both old format (lat/lng) and new format (latitude/longitude)
         """
         try:
             if not address_data:
@@ -38,12 +39,21 @@ class LocationToolsHandler:
                     logger.warning(f"Failed to parse address JSON: {address_data}")
                     return None
             
-            # Extract latitude and longitude
+            # Try new format first (latitude/longitude)
             latitude = address_data.get('latitude')
             longitude = address_data.get('longitude')
             
+            # If not found, try old format (lat/lng)
+            if not (latitude and longitude):
+                latitude = address_data.get('lat')
+                longitude = address_data.get('lng')
+            
             if latitude and longitude:
-                return (float(latitude), float(longitude))
+                try:
+                    return (float(latitude), float(longitude))
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid coordinate values: lat={latitude}, lng={longitude}")
+                    return None
                 
             return None
             
@@ -81,6 +91,51 @@ class LocationToolsHandler:
             logger.error(f"Error getting property location string: {str(e)}")
             return 'Unknown Location'
     
+    def _get_fallback_address_info(self, address_data: Dict[str, Any], property_data: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Get address information for fallback when coordinates are not available
+        """
+        try:
+            # Parse address data if it's a string
+            if isinstance(address_data, str):
+                try:
+                    address_data = json.loads(address_data)
+                except json.JSONDecodeError:
+                    address_data = {}
+            
+            if not address_data:
+                address_data = {}
+            
+            # Extract address components
+            building_name = property_data.get('building_name', '')
+            locality = address_data.get('locality', '')
+            city = address_data.get('city', 'Dubai')
+            country = address_data.get('country', 'UAE')
+            zipcode = address_data.get('zipcode', '')
+            map_location = address_data.get('map_location', '')
+            
+            return {
+                "building_name": building_name,
+                "locality": locality,
+                "city": city,
+                "country": country,
+                "zipcode": zipcode,
+                "map_location": map_location,
+                "full_address": self.get_property_location_string(property_data)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting fallback address info: {str(e)}")
+            return {
+                "building_name": property_data.get('building_name', ''),
+                "locality": '',
+                "city": 'Dubai',
+                "country": 'UAE',
+                "zipcode": '',
+                "map_location": '',
+                "full_address": property_data.get('building_name', 'Unknown Location')
+            }
+    
     async def find_nearest_place(self, property_data: Dict[str, Any], query: str, k: int = 3) -> Dict[str, Any]:
         """
         Find nearest places to a property using its coordinates
@@ -99,9 +154,19 @@ class LocationToolsHandler:
             coordinates = self.extract_coordinates_from_address(address_data)
             
             if not coordinates:
+                # Fallback: provide property address information instead
+                property_name = property_data.get('building_name', 'Unknown Property')
+                address_info = self._get_fallback_address_info(address_data, property_data)
                 return {
-                    "error": "Could not extract coordinates from property address",
-                    "property_name": property_data.get('building_name', 'Unknown Property')
+                    "error": f"Could not extract coordinates from property address",
+                    "property_name": property_name,
+                    "fallback_info": address_info,
+                    "has_fallback": True,
+                    "property_context": {
+                        "property_name": property_name,
+                        "property_id": property_data.get('id'),
+                        "query": query
+                    }
                 }
             
             lat, lng = coordinates
@@ -242,6 +307,9 @@ class LocationToolsHandler:
         """
         try:
             if 'error' in result:
+                # Check if we have fallback address information
+                if result.get('has_fallback') and result.get('fallback_info'):
+                    return self._format_fallback_address_response(result)
                 return f"❌ {result['error']}"
             
             nearest_places = result.get('nearestPlaces', [])
@@ -322,6 +390,60 @@ class LocationToolsHandler:
         except Exception as e:
             logger.error(f"Error formatting route response: {str(e)}")
             return f"❌ Error formatting response: {str(e)}"
+    
+    def _format_fallback_address_response(self, result: Dict[str, Any]) -> str:
+        """
+        Format fallback response when coordinates are not available
+        """
+        try:
+            property_name = result.get('property_name', 'the property')
+            fallback_info = result.get('fallback_info', {})
+            
+            # Get the query from property context if available
+            property_context = result.get('property_context', {})
+            query = property_context.get('query', 'places')
+            
+            building_name = fallback_info.get('building_name', '')
+            locality = fallback_info.get('locality', '')
+            city = fallback_info.get('city', 'Dubai')
+            country = fallback_info.get('country', 'UAE')
+            map_location = fallback_info.get('map_location', '')
+            
+            # Build location text
+            location_parts = []
+            if building_name:
+                location_parts.append(building_name)
+            if locality:
+                location_parts.append(locality)
+            if city:
+                location_parts.append(city)
+            if country:
+                location_parts.append(country)
+            
+            location_text = ', '.join(location_parts) if location_parts else 'Dubai, UAE'
+            
+            response = f"""😔 Sorry, I couldn't find nearby {query} for *{property_name}* right now.
+
+📍 *{property_name}* is located at:
+{location_text}
+
+🗺️ **What I can help you with:**
+• Send you the property location brochure with interactive map
+• Provide general area information about {city}
+• Help you with property details and viewing appointments
+
+💡 **For nearby amenities:**
+Ask me to "send location brochure" for an interactive map with nearby {query} and other places!"""
+
+            # Add map link if available
+            if map_location:
+                response += f"\n\n🔗 **Google Maps:** {map_location}"
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error formatting fallback response: {str(e)}")
+            return f"❌ I encountered an issue providing location information for {result.get('property_name', 'the property')}. Please try asking for the location brochure instead."
 
 
 # Create global instance for easy import

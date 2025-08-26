@@ -120,8 +120,8 @@ class SimplePropertySearchAgent:
             if params.get('locality'):
                 query = query.ilike('address->locality', f"%{params['locality']}%")
             
-            # Execute query
-            response = query.limit(10).execute()
+            # Execute query  
+            response = query.limit(15).execute()
             return response.data if response.data else []
             
         except Exception as e:

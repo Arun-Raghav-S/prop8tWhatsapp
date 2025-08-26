@@ -137,7 +137,7 @@ def generate_curl_command(method: str, url: str, headers: Dict[str, str], data: 
 
 async def mark_message_as_read(message_id: str, whatsapp_business_account: str = None) -> bool:
     """
-    Mark a WhatsApp message as read and show typing indicator for better user experience
+    Mark a WhatsApp message as read
     
     Args:
         message_id: The WhatsApp message ID (e.g., wamid.HBgMOTE4MjgxODQwNDYyFQIAEhggRDc3...)
@@ -159,13 +159,7 @@ async def mark_message_as_read(message_id: str, whatsapp_business_account: str =
             "messageId": message_id
         }
         
-        # Prepare API request data for messages endpoint (needs typing_indicator)
-        messages_data = {
-            "messageId": message_id,
-            "typing_indicator": {
-                "type": "text"
-            }
-        }
+        # Note: Only using mark-read endpoint, not messages endpoint
         
         headers = {
             "Accept": "application/json, application/xml",
@@ -176,7 +170,6 @@ async def mark_message_as_read(message_id: str, whatsapp_business_account: str =
         logger.info(f"📬 [MARK_READ] Marking message as read: {message_id[:20]}...")
         logger.info(f"🔄 [MARK_READ] Business Account: {whatsapp_business_account}")
         logger.info(f"📬 [MARK_READ] Mark-read data: {mark_read_data}")
-        logger.info(f"📬 [MARK_READ] Messages data: {messages_data}")
         
         async with httpx.AsyncClient() as client:
             # First API call: mark-read endpoint (only messageId)
@@ -192,30 +185,12 @@ async def mark_message_as_read(message_id: str, whatsapp_business_account: str =
             if response.status_code == 200:
                 logger.info(f"✅ [MARK_READ] Successfully marked message as read")
                 logger.info(f"📄 [MARK_READ] Mark-read response: {response.text}")
-                
-                # Second API call: messages endpoint with typing_indicator
-                messages_url = f"{config.AISENSY_BASE_URL}/direct-apis/t1/messages"
-                
-                # Generate and log curl command for the second API call
-                curl_command_2 = generate_curl_command("POST", messages_url, headers, messages_data)
-                logger.info(f"🔧 [CURL] Equivalent curl command for messages endpoint:")
-                logger.info(f"🔧 [CURL] {curl_command_2}")
-                
-                response_2 = await client.post(messages_url, headers=headers, json=messages_data, timeout=30.0)
-                
-                logger.info(f"📊 [MESSAGES_API] Response status: {response_2.status_code}")
-                logger.info(f"📄 [MESSAGES_API] Response body: {response_2.text}")
-                
-                if response_2.status_code == 200:
-                    logger.info(f"✅ [MESSAGES_API] Successfully hit messages endpoint")
-                else:
-                    logger.warning(f"⚠️ [MESSAGES_API] Messages endpoint call failed. Status: {response_2.status_code}")
-                
                 return True
             else:
-                logger.error(f"❌ [MARK_READ] Failed to mark message as read. Status: {response.status_code}")
-                logger.error(f"❌ [MARK_READ] Response: {response.text}")
-                return False
+                logger.warning(f"⚠️ [MARK_READ] Failed to mark message as read. Status: {response.status_code}")
+                logger.warning(f"⚠️ [MARK_READ] Response: {response.text}")
+                logger.info(f"💡 [MARK_READ] This is non-critical, continuing with message processing")
+                return True  # Return True to not break the flow
                 
     except httpx.TimeoutException:
         logger.error(f"⏱️ [MARK_READ] Timeout marking message as read: {message_id[:20]}...")
