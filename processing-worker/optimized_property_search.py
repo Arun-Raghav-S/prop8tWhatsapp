@@ -294,21 +294,25 @@ class OptimizedPropertySearch:
     async def _try_fallback_searches(self, original_params: Dict[str, Any], user_message: str) -> List[Dict]:
         """
         Try various fallback searches when main search returns no results
+        FIXED: Better budget constraint handling
         """
         fallback_attempts = [
             # 1. Try direct table query (bypasses is_trained=true requirement)
             "direct_table_query",
             
-            # 2. Remove location restriction  
+            # 2. Remove location restriction but KEEP budget  
             {k: v for k, v in original_params.items() if k != 'locality'},
             
-            # 3. Remove budget restrictions
+            # 3. Expand budget by 50% but keep other constraints
+            self._create_expanded_budget_params(original_params, 1.5),
+            
+            # 4. Remove property type but KEEP budget and location
+            {k: v for k, v in original_params.items() if k != 'property_type'},
+            
+            # 5. Only remove budget as LAST resort, keep location and type
             {k: v for k, v in original_params.items() if not k.endswith('_price_aed')},
             
-            # 4. Try different property types
-            {**{k: v for k, v in original_params.items() if k != 'property_type'}, 'property_type': 'Apartment'},
-            
-            # 5. Very broad search - just transaction type
+            # 6. Very broad search - just transaction type (last resort)
             {'sale_or_rent': original_params.get('sale_or_rent', 'sale')},
         ]
         
@@ -394,6 +398,32 @@ class OptimizedPropertySearch:
         except Exception as e:
             logger.error(f"❌ Direct table query failed: {str(e)}")
             return []
+    
+    def _create_expanded_budget_params(self, original_params: Dict[str, Any], multiplier: float) -> Dict[str, Any]:
+        """
+        Create params with expanded budget constraints
+        """
+        expanded_params = original_params.copy()
+        
+        # Expand sale budget
+        if 'min_sale_price_aed' in original_params:
+            # Keep min as is, expand max
+            if 'max_sale_price_aed' in original_params:
+                expanded_params['max_sale_price_aed'] = int(original_params['max_sale_price_aed'] * multiplier)
+            else:
+                # If no max was set, create one based on min
+                expanded_params['max_sale_price_aed'] = int(original_params['min_sale_price_aed'] * multiplier)
+        
+        # Expand rent budget  
+        if 'min_rent_price_aed' in original_params:
+            # Keep min as is, expand max
+            if 'max_rent_price_aed' in original_params:
+                expanded_params['max_rent_price_aed'] = int(original_params['max_rent_price_aed'] * multiplier)
+            else:
+                # If no max was set, create one based on min
+                expanded_params['max_rent_price_aed'] = int(original_params['min_rent_price_aed'] * multiplier)
+        
+        return expanded_params
     
     def format_properties_for_whatsapp(self, properties: List[Dict], user_requirements: Dict[str, Any]) -> str:
         """

@@ -35,12 +35,12 @@ class WhatsAppCarouselTool:
             Dict with success status and message
         """
         try:
-            # Ensure we have at least 7 properties and at most max_properties
-            if len(property_ids) < 7:
-                logger.warning(f"Not enough properties for carousel: {len(property_ids)}. Minimum is 7.")
+            # Ensure we have at least 1 property and at most max_properties
+            if len(property_ids) < 1:
+                logger.warning(f"Not enough properties for carousel: {len(property_ids)}. Minimum is 1.")
                 return {
                     'success': False,
-                    'message': f"Not enough properties for carousel. Need at least 7, got {len(property_ids)}",
+                    'message': f"Not enough properties for carousel. Need at least 1, got {len(property_ids)}",
                     'sent_carousel': False
                 }
             
@@ -92,13 +92,13 @@ class WhatsAppCarouselTool:
                 'sent_carousel': False
             }
     
-    def should_send_carousel(self, property_count: int, min_properties: int = 7) -> bool:
+    def should_send_carousel(self, property_count: int, min_properties: int = 1) -> bool:
         """
         SIMPLE RULE: Send carousel if we have enough properties
         
         Args:
             property_count: Number of properties found
-            min_properties: Minimum properties needed for carousel (default 7)
+            min_properties: Minimum properties needed for carousel (default 1)
             
         Returns:
             bool: True if carousel should be sent

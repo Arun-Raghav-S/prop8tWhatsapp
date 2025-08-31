@@ -15,6 +15,14 @@ from openai import AsyncOpenAI
 from utils.logger import setup_logger
 from utils.session_manager import ConversationSession
 
+# Import sophisticated search components
+from tools.sophisticated_search_pipeline import (
+    sophisticated_search_pipeline, 
+    SearchCriteria, 
+    search_with_sophisticated_intelligence
+)
+from tools.sophisticated_response_generator import generate_sophisticated_response
+
 logger = setup_logger(__name__)
 
 
@@ -102,6 +110,8 @@ class ConversationResponse(BaseModel):
     requirements: UserRequirements
     should_search_properties: bool = False
     search_params: Optional[Dict[str, Any]] = None
+    sophisticated_search_criteria: Optional[Dict[str, Any]] = None
+    use_sophisticated_search: bool = True  # Default to sophisticated search
     debug_info: Optional[Dict[str, Any]] = None
 
 
@@ -128,6 +138,12 @@ class UnifiedConversationEngine:
         try:
             # INTELLIGENT CONTEXT DETECTION: Use AI to understand user intent
             intent_analysis = await self._analyze_user_intent(message, session)
+            
+            # Handle pagination requests first (before fresh search detection)
+            if intent_analysis.get("is_pagination_request") or intent_analysis.get("intent_category") == "pagination":
+                logger.info("📄 PAGINATION_REQUEST detected by AI - handling pagination")
+                # Don't clear context! We need the stored properties for pagination
+                return await self._handle_pagination_request(message, session, self._get_requirements_from_session(session))
             
             if intent_analysis.get("is_fresh_search"):
                 logger.info("🔄 FRESH_SEARCH detected by AI - resetting conversation stage")
@@ -192,12 +208,18 @@ class UnifiedConversationEngine:
         if updated_requirements.is_complete():
             # Rare case: user provided everything in first message
             session.context['conversation_stage'] = ConversationStage.READY_FOR_SEARCH
+            
+            # Prepare both legacy and sophisticated search parameters
+            search_criteria = self._convert_to_sophisticated_search_criteria(updated_requirements)
+            
             return ConversationResponse(
                 message="Perfect! I have all the details I need. Let me find properties for you.",
                 stage=ConversationStage.READY_FOR_SEARCH,
                 requirements=updated_requirements,
                 should_search_properties=True,
-                search_params=self._convert_to_search_params(updated_requirements)
+                search_params=self._convert_to_search_params(updated_requirements),
+                sophisticated_search_criteria=search_criteria.to_dict(),
+                use_sophisticated_search=True
             )
         
         # Generate smart clarification message
@@ -224,12 +246,18 @@ class UnifiedConversationEngine:
         # Check if we now have everything
         if updated_requirements.is_complete():
             session.context['conversation_stage'] = ConversationStage.READY_FOR_SEARCH
+            
+            # Prepare both legacy and sophisticated search parameters
+            search_criteria = self._convert_to_sophisticated_search_criteria(updated_requirements)
+            
             return ConversationResponse(
                 message="Perfect! I have all the details. Let me find the best properties for you.",
                 stage=ConversationStage.READY_FOR_SEARCH,
                 requirements=updated_requirements,
                 should_search_properties=True,
-                search_params=self._convert_to_search_params(updated_requirements)
+                search_params=self._convert_to_search_params(updated_requirements),
+                sophisticated_search_criteria=search_criteria.to_dict(),
+                use_sophisticated_search=True
             )
         
         # Still missing info - ask for more
@@ -243,18 +271,23 @@ class UnifiedConversationEngine:
     
     async def _handle_ready_for_search(self, message: str, session: ConversationSession, requirements: UserRequirements) -> ConversationResponse:
         """
-        Handle when we're ready to search - this triggers property search
+        Handle when we're ready to search - this triggers sophisticated property search
         """
-        logger.info("🎯 STAGE 3: Ready for Search")
+        logger.info("🎯 STAGE 3: Ready for Search - Using Sophisticated Search")
         
         session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
+        
+        # Prepare sophisticated search criteria
+        search_criteria = self._convert_to_sophisticated_search_criteria(requirements)
         
         return ConversationResponse(
             message="Searching for properties that match your criteria...",
             stage=ConversationStage.SHOWING_RESULTS,
             requirements=requirements,
             should_search_properties=True,
-            search_params=self._convert_to_search_params(requirements)
+            search_params=self._convert_to_search_params(requirements),
+            sophisticated_search_criteria=search_criteria.to_dict(),
+            use_sophisticated_search=True
         )
     
     async def _handle_showing_results(self, message: str, session: ConversationSession, requirements: UserRequirements) -> ConversationResponse:
@@ -272,31 +305,82 @@ class UnifiedConversationEngine:
         ]
         
         if any(keyword in message_lower for keyword in new_search_keywords):
-            logger.info("🔄 NEW_SEARCH detected in SHOWING_RESULTS - switching to search mode")
+            logger.info("🔄 NEW_SEARCH detected in SHOWING_RESULTS - switching to sophisticated search mode")
             session.context['conversation_stage'] = ConversationStage.READY_FOR_SEARCH
             
-            # Extract new requirements and trigger search
+            # Extract new requirements and trigger sophisticated search
             updated_requirements = await self._extract_requirements_ai(message, UserRequirements())
             self._save_requirements_to_session(session, updated_requirements)
+            
+            # Prepare sophisticated search criteria
+            search_criteria = self._convert_to_sophisticated_search_criteria(updated_requirements)
             
             return ConversationResponse(
                 message="Let me find those properties for you.",
                 stage=ConversationStage.READY_FOR_SEARCH,
                 requirements=updated_requirements,
                 should_search_properties=True,
-                search_params=self._convert_to_search_params(updated_requirements)
+                search_params=self._convert_to_search_params(updated_requirements),
+                sophisticated_search_criteria=search_criteria.to_dict(),
+                use_sophisticated_search=True
             )
         
-        # Check if user wants to see different properties from current results
-        if any(word in message_lower for word in ['other', 'different', 'more', 'cheaper', 'expensive']):
-            # Modify search and get new results
+        # Check for BUDGET CHANGES first (before property references)
+        budget_change_keywords = ['budget', 'increase', 'decrease', 'change budget', 'set budget', 'new budget']
+        if any(keyword in message_lower for keyword in budget_change_keywords):
+            logger.info("💰 Budget change detected - triggering new search")
             session.context['conversation_stage'] = ConversationStage.READY_FOR_SEARCH
+            
+            # Extract new requirements including the budget change
+            updated_requirements = await self._extract_requirements_ai(message, requirements)
+            self._save_requirements_to_session(session, updated_requirements)
+            
+            # Prepare sophisticated search criteria with new budget
+            search_criteria = self._convert_to_sophisticated_search_criteria(updated_requirements)
+            
+            return ConversationResponse(
+                message="Let me find properties with your updated budget.",
+                stage=ConversationStage.READY_FOR_SEARCH,
+                requirements=updated_requirements,
+                should_search_properties=True,
+                search_params=self._convert_to_search_params(updated_requirements),
+                sophisticated_search_criteria=search_criteria.to_dict(),
+                use_sophisticated_search=True
+            )
+        
+        # Check if user wants to see MORE properties from pagination
+        # Handle typos and variations: "shoe more", "show mor", "more prop", etc.
+        pagination_keywords = [
+            'show more', 'more properties', 'next batch', 'more results',
+            'shoe more', 'show mor', 'more prop', 'next prop', 
+            'see more', 'view more', 'load more', 'get more'
+        ]
+        
+        # Also check for patterns like "shoe shoe more" or repeated words
+        normalized_message = ' '.join(message_lower.split())  # Remove extra spaces
+        
+        if (any(phrase in normalized_message for phrase in pagination_keywords) or
+            ('more' in normalized_message and any(word in normalized_message for word in ['shoe', 'show', 'properties', 'prop']))):
+            logger.info(f"📄 PAGINATION detected in message: '{message}' -> normalized: '{normalized_message}'")
+            # Handle pagination - show next batch of properties
+            return await self._handle_pagination_request(message, session, requirements)
+        
+        # Check if user wants to see different properties from current results
+        if any(word in message_lower for word in ['other', 'different', 'cheaper', 'expensive']):
+            # Modify search and get new results using sophisticated search
+            session.context['conversation_stage'] = ConversationStage.READY_FOR_SEARCH
+            
+            # Prepare sophisticated search criteria
+            search_criteria = self._convert_to_sophisticated_search_criteria(requirements)
+            
             return ConversationResponse(
                 message="Let me find different properties for you.",
                 stage=ConversationStage.READY_FOR_SEARCH,
                 requirements=requirements,
                 should_search_properties=True,
-                search_params=self._convert_to_search_params(requirements)
+                search_params=self._convert_to_search_params(requirements),
+                sophisticated_search_criteria=search_criteria.to_dict(),
+                use_sophisticated_search=True
             )
         
         # User asking about specific property
@@ -352,10 +436,11 @@ IMPORTANT PARSING RULES:
 
 BUDGET:
 - "80k" or "80-100k" means 80,000 to 100,000 AED
-- "1M" or "1.5M" means 1,000,000 to 1,500,000 AED  
-- "2-3M" means 2,000,000 to 3,000,000 AED
+- "1M" or "1.5M" means UP TO that amount (budget_max), not exact match
+- "1.5M" → budget_max: 1500000, budget_min: null (find properties up to 1.5M)
+- "2-3M" means 2,000,000 to 3,000,000 AED (both min and max specified)  
 - Always return budget values in actual AED (not thousands)
-- Examples: "80k" → budget_min: 80000, "100k" → budget_max: 100000
+- Examples: "80k" → budget_max: 80000, "1.5M" → budget_max: 1500000
 
 LOCATION:
 - "any location", "anywhere", "all areas", "any area" → location: "any"
@@ -462,7 +547,7 @@ Rules:
     
     def _convert_to_search_params(self, requirements: UserRequirements) -> Dict[str, Any]:
         """
-        Convert AI-extracted requirements to search parameters
+        Convert AI-extracted requirements to search parameters (legacy format)
         """
         params = {}
         
@@ -522,6 +607,56 @@ Rules:
         logger.info(f"🔍 [REQUIREMENTS] From requirements: {requirements.dict()}")
         
         return params
+    
+    def _convert_to_sophisticated_search_criteria(self, requirements: UserRequirements) -> SearchCriteria:
+        """
+        🚀 Convert AI-extracted requirements to SearchCriteria for sophisticated search
+        """
+        # Handle location filtering for sophisticated search
+        location = requirements.location
+        if requirements.location:
+            location_lower = requirements.location.lower()
+            if location_lower in ["any", "anywhere", "all areas", "any location", "nearby", "nearby areas"]:
+                location = None  # Let sophisticated search handle location flexibility
+        
+        # Normalize property type for sophisticated search
+        property_type = None
+        if requirements.property_type:
+            prop_type = requirements.property_type.lower()
+            if 'villa village' in prop_type:
+                property_type = 'Villa village'
+            elif 'villa' in prop_type:
+                property_type = 'Villa'
+            elif 'apartment' in prop_type or 'flat' in prop_type or 'bed' in prop_type:
+                property_type = 'Apartment'
+            elif 'penthouse' in prop_type:
+                property_type = 'Penthouse'
+            elif 'studio' in prop_type:
+                property_type = 'Studio'
+            elif 'townhouse' in prop_type or 'town house' in prop_type:
+                property_type = 'Townhouse'
+            elif 'residential' in prop_type:
+                property_type = 'Residential'
+            elif 'commercial' in prop_type:
+                property_type = 'Commercial'
+            elif 'plot' in prop_type:
+                property_type = 'Plot'
+            else:
+                property_type = requirements.property_type.title()
+        
+        # Create SearchCriteria object
+        criteria = SearchCriteria(
+            transaction_type=requirements.transaction_type,
+            location=location,
+            budget_min=requirements.budget_min,
+            budget_max=requirements.budget_max,
+            property_type=property_type,
+            bedrooms=requirements.bedrooms
+        )
+        
+        logger.info(f"🧠 [SOPHISTICATED_SEARCH] Generated criteria: {criteria.to_dict()}")
+        
+        return criteria
     
     def _get_requirements_from_session(self, session: ConversationSession) -> UserRequirements:
         """
@@ -673,12 +808,19 @@ Rules:
             has_active_property_id = bool(session.context.get('active_property_id'))
             current_stage = session.context.get('conversation_stage', ConversationStage.USER_INITIATED)
             
+            # Check pagination context
+            all_available_properties = session.context.get('all_available_properties', [])
+            properties_shown = session.context.get('properties_shown', 0)
+            has_pagination_context = bool(all_available_properties and len(all_available_properties) > properties_shown)
+            
             context_info = f"""
 Current conversation context:
 - Stage: {current_stage}
 - Has active properties: {has_active_properties}
 - Has active property selected: {has_active_property_id}
 - Previous interactions: {"Yes" if has_active_properties else "No"}
+- PAGINATION CONTEXT: {len(all_available_properties)} total properties available, {properties_shown} already shown
+- Can show more properties: {has_pagination_context}
 """
 
             analysis_prompt = f"""
@@ -694,7 +836,8 @@ Analyze and return JSON with:
     "is_location_request": boolean,  // true if asking about location/map/directions/nearby places
     "is_property_question": boolean,  // true if asking about specific property details
     "is_continuing_conversation": boolean,  // true if following up on existing conversation
-    "intent_category": "search|location|property_details|followup|general",
+    "is_pagination_request": boolean,  // true if asking for more properties (show more, next batch, etc.)
+    "intent_category": "search|location|property_details|followup|pagination|general",
     "confidence": float  // 0-1 how confident you are
 }}
 
@@ -703,9 +846,11 @@ RULES FOR ANALYSIS:
 2. If user wants new property search ("show me villas", "find apartments", "I want to buy") → is_fresh_search = true
 3. If asking about current property details → is_property_question = true, is_fresh_search = false
 4. If user is clearly continuing existing conversation → is_continuing_conversation = true, is_fresh_search = false
-5. Use CONTEXT: if user has active properties and asks location questions, it's about those properties, NOT a fresh search
+5. **PAGINATION DETECTION**: If user says "show more", "more properties", "next batch", "see more" (even with typos like "shoe more") → is_continuing_conversation = true, is_fresh_search = false
+6. Use CONTEXT: if user has active properties and asks location questions, it's about those properties, NOT a fresh search
+7. **CRITICAL**: Pagination requests should NEVER be classified as fresh searches, even with typos!
 
-Be intelligent - understand context and intent, don't rely on keywords!
+Be intelligent - understand context and intent, don't rely on keywords! Handle typos gracefully.
 """
 
             response = await self.openai.chat.completions.create(
@@ -819,36 +964,58 @@ Generate a concise, helpful response. Guide them to ask about specific propertie
     def _extract_property_reference(self, message: str) -> Optional[str]:
         """
         Extract property reference from user message (e.g., "property 1", "first one", "2nd property")
+        FIXED: Don't match numbers that are clearly budget amounts or other contexts
         """
         import re
         
         message_lower = message.lower().strip()
+        
+        # EXCLUDE budget/price contexts - these are NOT property references
+        budget_contexts = [
+            'budget', 'price', 'cost', 'aed', 'million', 'thousand', 'k', 'm',
+            'increase', 'decrease', 'change', 'set', 'my budget', 'the budget'
+        ]
+        
+        # If message contains budget/price context, don't extract property numbers
+        if any(context in message_lower for context in budget_contexts):
+            logger.info(f"🚫 Skipping property reference extraction - budget/price context detected: {message}")
+            return None
         
         # Pattern 1: "property 1", "property #1", "property number 1"
         match = re.search(r'property\s*(?:number\s*|#\s*)?(\d+)', message_lower)
         if match:
             return match.group(1)
         
-        # Pattern 2: "1st", "2nd", "3rd", etc.
-        match = re.search(r'(\d+)(?:st|nd|rd|th)', message_lower)
-        if match:
-            return match.group(1)
+        # Pattern 2: "1st", "2nd", "3rd", etc. (but only in property context)
+        if any(word in message_lower for word in ['property', 'apartment', 'villa', 'listing']):
+            match = re.search(r'(\d+)(?:st|nd|rd|th)', message_lower)
+            if match:
+                return match.group(1)
         
-        # Pattern 3: "first", "second", "third"
-        ordinal_words = {
-            'first': '1', 'second': '2', 'third': '3', 'fourth': '4', 'fifth': '5',
-            'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5'
-        }
-        for word, num in ordinal_words.items():
-            if word in message_lower:
-                return num
+        # Pattern 3: "first", "second", "third" (but only in property context)
+        if any(word in message_lower for word in ['property', 'apartment', 'villa', 'listing', 'one', 'option']):
+            ordinal_words = {
+                'first': '1', 'second': '2', 'third': '3', 'fourth': '4', 'fifth': '5'
+            }
+            for word, num in ordinal_words.items():
+                if word in message_lower:
+                    return num
         
-        # Pattern 4: Just a number at the beginning/end
-        match = re.search(r'\b(\d+)\b', message_lower)
-        if match:
-            num = int(match.group(1))
-            if 1 <= num <= 20:  # Reasonable range for property references
-                return str(num)
+        # Pattern 4: "tell me about 1", "details of 2" (explicit property context)
+        property_context_patterns = [
+            r'tell me about\s+(\d+)',
+            r'details of\s+(\d+)', 
+            r'more about\s+(\d+)',
+            r'property\s+(\d+)',
+            r'option\s+(\d+)'
+        ]
+        
+        for pattern in property_context_patterns:
+            match = re.search(pattern, message_lower)
+            if match:
+                num = int(match.group(1))
+                if 1 <= num <= 20:  # Reasonable range for property references
+                    return str(num)
         
         return None
     
@@ -944,6 +1111,220 @@ Generate a concise, helpful response. Guide them to ask about specific propertie
         except Exception as e:
             logger.error(f"❌ Property formatting error: {e}")
             return f"I have the details for property {reference}, but there was an issue formatting them. Let me know what specific information you'd like to know!"
+    
+    async def execute_sophisticated_search_and_respond(self, criteria_dict: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        🚀 Execute sophisticated search and generate intelligent response
+        
+        This is the main integration point between conversation engine and sophisticated search.
+        Called by the main processing worker when should_search_properties=True and use_sophisticated_search=True.
+        
+        Args:
+            criteria_dict: Search criteria dictionary from ConversationResponse.sophisticated_search_criteria
+        
+        Returns:
+            Tuple of (intelligent_response_message, property_objects_for_carousel)
+        """
+        try:
+            # Convert dict back to SearchCriteria object
+            criteria = SearchCriteria(**criteria_dict)
+            
+            logger.info(f"🧠 Executing sophisticated search with criteria: {criteria.to_dict()}")
+            
+            # Execute sophisticated search
+            search_result = await sophisticated_search_pipeline.search_with_intelligence(criteria, limit=15)
+            
+            logger.info(f"🎯 Sophisticated search completed:")
+            logger.info(f"   Tier: {search_result.tier.value}")
+            logger.info(f"   Strategy: {search_result.strategy_used}")
+            logger.info(f"   Properties found: {search_result.count}")
+            logger.info(f"   Execution time: {search_result.execution_time_ms:.0f}ms")
+            
+            # Generate intelligent response message
+            intelligent_response = generate_sophisticated_response(search_result, criteria)
+            
+            # Return both the response and property objects for carousel
+            return intelligent_response, search_result.properties
+            
+        except Exception as e:
+            logger.error(f"❌ Sophisticated search execution failed: {e}")
+            
+            # Fallback response
+            fallback_response = """🔍 I encountered an issue with the advanced search, but let me help you find properties.
+
+💡 **What I can do:**
+• Search with different criteria
+• Browse popular properties
+• Connect you with a property consultant
+
+What would you like to try?"""
+            
+            return fallback_response, []
+    
+    async def _handle_pagination_request(self, message: str, session: ConversationSession, requirements: UserRequirements) -> ConversationResponse:
+        """
+        🔄 Handle pagination requests for "show more properties"
+        """
+        logger.info("📄 Handling pagination request")
+        
+        # Check if we have stored properties for pagination
+        all_properties = session.context.get('all_available_properties', [])
+        properties_shown = session.context.get('properties_shown', 0)
+        properties_per_batch = session.context.get('properties_per_batch', 10)
+        
+        logger.info(f"📄 PAGINATION_DEBUG: all_properties count = {len(all_properties)}, properties_shown = {properties_shown}")
+        
+        if not all_properties:
+            logger.warning("⚠️ No all_available_properties found in session context")
+            return ConversationResponse(
+                message="I don't have any stored properties to show more of. Please search for properties first.",
+                stage=ConversationStage.COLLECTING_REQUIREMENTS,
+                requirements=requirements
+            )
+        
+        # Calculate next batch
+        total_properties = len(all_properties)
+        remaining_properties = total_properties - properties_shown
+        
+        if remaining_properties <= 0:
+            return ConversationResponse(
+                message=f"You've already seen all {total_properties} available properties! Would you like to search with different criteria?",
+                stage=ConversationStage.SHOWING_RESULTS,
+                requirements=requirements
+            )
+        
+        # Get next batch
+        next_batch_size = min(properties_per_batch, remaining_properties)
+        start_index = properties_shown
+        end_index = start_index + next_batch_size
+        next_batch = all_properties[start_index:end_index]
+        
+        logger.info(f"📄 Sending next batch: properties {start_index+1}-{end_index} of {total_properties}")
+        
+        # Extract property IDs for carousel
+        property_ids = []
+        for i, prop in enumerate(next_batch):
+            prop_id = None
+            
+            if isinstance(prop, dict):
+                if prop.get('original_property_id'):
+                    prop_id = str(prop['original_property_id'])
+                elif prop.get('id'):
+                    prop_id = str(prop['id'])
+            elif hasattr(prop, 'original_property_id') and prop.original_property_id:
+                prop_id = str(prop.original_property_id)
+            elif hasattr(prop, 'id') and prop.id:
+                prop_id = str(prop.id)
+            
+            if prop_id:
+                property_ids.append(prop_id)
+                logger.info(f"🆔 Batch {start_index//properties_per_batch + 2} Property {i+1}: ID = {prop_id}")
+        
+        if len(property_ids) >= 1:  # Send carousel for 1+ properties
+            # Store pagination info for carousel sending (will be handled by agent system)
+            session.context['pagination_batch_ids'] = property_ids
+            session.context['pagination_batch_start'] = start_index + 1
+            session.context['pagination_batch_end'] = end_index
+            session.context['pagination_total'] = total_properties
+            
+            return ConversationResponse(
+                message="pagination_request",  # Special message type to trigger carousel in agent system
+                stage=ConversationStage.SHOWING_RESULTS,
+                requirements=requirements,
+                should_search_properties=False,  # This is pagination, not new search
+                debug_info={
+                    "pagination": True,
+                    "batch_size": next_batch_size,
+                    "properties_shown_after": end_index,
+                    "total_properties": total_properties
+                }
+            )
+        else:
+            # Not enough properties for carousel, format as text
+            properties_text = self._format_properties_text(next_batch, start_index + 1)
+            
+            # Update session
+            session.context['properties_shown'] = end_index
+            
+            remaining_after = total_properties - end_index
+            if remaining_after > 0:
+                properties_text += f"\n\n💬 Say *\"show more properties\"* to see {remaining_after} more properties!"
+            
+            return ConversationResponse(
+                message=properties_text,
+                stage=ConversationStage.SHOWING_RESULTS,
+                requirements=requirements
+            )
+    
+    def _format_properties_text(self, properties: List[Dict[str, Any]], start_number: int = 1) -> str:
+        """
+        Format properties as WhatsApp text message
+        """
+        if not properties:
+            return "No properties to display."
+        
+        response_parts = [f"🏠 **Properties {start_number}-{start_number + len(properties) - 1}:**\n"]
+        
+        for i, prop in enumerate(properties):
+            try:
+                # Extract basic info
+                property_type = prop.get('property_type', 'Property')
+                bedrooms = prop.get('bedrooms', 0)
+                bathrooms = prop.get('bathrooms', 0)
+                
+                # Format price
+                price = "Price on request"
+                if prop.get('sale_price_aed'):
+                    price = f"AED {prop['sale_price_aed']:,}"
+                elif prop.get('rent_price_aed'):
+                    price = f"AED {prop['rent_price_aed']:,}/year"
+                
+                # Extract location
+                address = prop.get('address', {})
+                if isinstance(address, str):
+                    try:
+                        address = json.loads(address)
+                    except:
+                        address = {}
+                
+                location = "Dubai"
+                if address and address.get('locality'):
+                    location = address['locality']
+                
+                building_name = prop.get('building_name', '')
+                if building_name:
+                    location = f"{building_name}, {location}"
+                
+                # Format size and features
+                features = []
+                if prop.get('bua_sqft'):
+                    features.append(f"{prop['bua_sqft']:,} sqft")
+                if bathrooms:
+                    features.append(f"{bathrooms} bath")
+                if prop.get('study'):
+                    features.append('study')
+                if prop.get('maid_room'):
+                    features.append('maid room')
+                if prop.get('landscaped_garden'):
+                    features.append('garden')
+                if prop.get('covered_parking_spaces'):
+                    features.append(f"{prop['covered_parking_spaces']} parking")
+                
+                features_text = " • ".join(features) if features else ""
+                
+                property_line = f"{start_number + i}. 🏠 *{bedrooms}BR {property_type}*\n"
+                property_line += f"💰 {price}\n"
+                property_line += f"📍 {location}\n"
+                if features_text:
+                    property_line += f"✨ {features_text}\n"
+                
+                response_parts.append(property_line)
+                
+            except Exception as e:
+                logger.error(f"❌ Error formatting property {i+1}: {e}")
+                response_parts.append(f"{start_number + i}. Property details available - ask for more info!\n")
+        
+        return "\n".join(response_parts)
 
 
 # Global instance

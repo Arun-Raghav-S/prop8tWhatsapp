@@ -77,137 +77,294 @@ class WhatsAppAgentSystem:
             conv_response = await self.unified_engine.process_message(message, session)
             
             # STEP 3: Handle property search if needed
-            if conv_response.should_search_properties and conv_response.search_params:
+            if conv_response.should_search_properties:
                 logger.info("🔍 Executing property search")
                 
-                # Execute optimized property search
-                search_results = await self.optimized_search.search_properties(
-                    conv_response.search_params, message
-                )
-                
-                if search_results['properties']:
-                    # Store properties in session for follow-up
-                    session.context['active_properties'] = search_results['properties']
-                    session.context['last_search_params'] = conv_response.search_params
+                # SOPHISTICATED SEARCH: Use new intelligent search pipeline
+                if conv_response.use_sophisticated_search and conv_response.sophisticated_search_criteria:
+                    logger.info("🧠 Using SOPHISTICATED SEARCH pipeline")
                     
-                    # CAROUSEL LOGIC: Use carousel for 7+ properties, limit to first 10
-                    if len(search_results['properties']) >= 7:
-                        from tools.whatsapp_carousel_tool import carousel_tool
-                        from utils.whatsapp_formatter import whatsapp_formatter
-                        
-                        logger.info(f"🎠 AUTO_CAROUSEL: {len(search_results['properties'])} properties found (>=7), sending carousel")
-                        
-                        # Extract property IDs - take first 10 properties
-                        limited_properties = search_results['properties'][:10]
-                        property_ids = []
-                        
-                        for i, prop in enumerate(limited_properties):
-                            prop_id = None
-                            
-                            # Handle different property object types
-                            if hasattr(prop, 'original_property_id') and prop.original_property_id:
-                                prop_id = str(prop.original_property_id)
-                                logger.info(f"🆔 Property {i+1}: using original_property_id = {prop_id}")
-                            elif hasattr(prop, 'id') and prop.id:
-                                prop_id = str(prop.id)
-                                logger.info(f"🆔 Property {i+1}: using id = {prop_id}")
-                            elif isinstance(prop, dict):
-                                # Handle dict objects from optimized search
-                                if prop.get('original_property_id'):
-                                    prop_id = str(prop['original_property_id'])
-                                    logger.info(f"🆔 Property {i+1}: using dict original_property_id = {prop_id}")
-                                elif prop.get('id'):
-                                    prop_id = str(prop['id'])
-                                    logger.info(f"🆔 Property {i+1}: using dict id = {prop_id}")
-                                else:
-                                    logger.warning(f"⚠️ Property {i+1}: no ID found in dict: {list(prop.keys())}")
-                            else:
-                                logger.warning(f"⚠️ Property {i+1}: unknown object type: {type(prop)}")
-                            
-                            if prop_id:
-                                property_ids.append(prop_id)
-                            else:
-                                logger.error(f"❌ Property {i+1}: failed to extract ID")
-                        
-                        if len(property_ids) >= 7:
-                            try:
-                                # Send carousel
-                                carousel_result = await carousel_tool.send_property_carousel(
-                                    session.user_id,
-                                    property_ids,
-                                    max_properties=10
-                                )
-                                
-                                if carousel_result['success']:
-                                    logger.info(f"✅ CAROUSEL_SENT: {carousel_result['property_count']} properties")
-                                    
-                                    # Update conversation stage
-                                    session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
-                                    
-                                    # Store limited properties for follow-up queries
-                                    session.context['active_properties'] = limited_properties
-                                    
-                                    # Return simple carousel confirmation message
-                                    response = f"🏠 *Found {len(search_results['properties'])} properties!* I've sent you the first {len(property_ids)} properties as cards with all the details.\n\n📱 Tap *Know More* button to view details or *Schedule Visit* button to book a viewing."
-                                    agent_used = "property_search_optimized_carousel"
-                                    
-                                    logger.info(f"🏠 PROPERTIES_FOUND: {len(search_results['properties'])} properties in {search_results['execution_time_ms']:.0f}ms")
-                                    # Return early to avoid text formatting
-                                    return response
-                                else:
-                                    logger.error(f"❌ Carousel failed: {carousel_result['message']}")
-                                    # Fall through to text response as fallback
-                            except Exception as e:
-                                logger.error(f"❌ Carousel error: {str(e)}")
-                                # Fall through to text response as fallback
-                        else:
-                            logger.warning(f"Not enough property IDs for carousel: {len(property_ids)}")
-                            # Fall through to text response
-                    
-                    # Format properties for WhatsApp (fallback or <7 properties)
-                    properties_text = self.optimized_search.format_properties_for_whatsapp(
-                        search_results['properties'], 
-                        conv_response.requirements.dict()
+                    # Execute sophisticated search and get intelligent response
+                    intelligent_response, properties = await self.unified_engine.execute_sophisticated_search_and_respond(
+                        conv_response.sophisticated_search_criteria
                     )
                     
-                    # Update conversation stage
-                    session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
+                    # Store properties in session for follow-up
+                    if properties:
+                        session.context['active_properties'] = properties
+                        session.context['last_search_params'] = conv_response.search_params
+                        session.context['last_sophisticated_criteria'] = conv_response.sophisticated_search_criteria
+                        
+                        # PAGINATION LOGIC: Store ALL properties, send first batch via carousel
+                        if len(properties) >= 1:
+                            from tools.whatsapp_carousel_tool import carousel_tool
+                            
+                            logger.info(f"🎠 SOPHISTICATED_CAROUSEL: {len(properties)} total properties, sending first 10 via carousel")
+                            
+                            # Reorder properties by priority (budget increase first, then location)
+                            alternatives_found = {}
+                            if hasattr(conv_response, 'search_result') and hasattr(conv_response.search_result, 'alternatives_found'):
+                                alternatives_found = conv_response.search_result.alternatives_found
+                            
+                            ordered_properties = self._reorder_properties_by_priority(
+                                properties, 
+                                alternatives_found,
+                                conv_response.sophisticated_search_criteria
+                            )
+                            
+                            # Store ALL properties with pagination info
+                            session.context['all_available_properties'] = ordered_properties
+                            session.context['properties_shown'] = 0
+                            session.context['properties_per_batch'] = 10
+                            
+                            # Extract property IDs for first batch (first 10)
+                            first_batch = ordered_properties[:10]
+                            property_ids = []
+                            
+                            for i, prop in enumerate(first_batch):
+                                prop_id = None
+                                
+                                # Handle different property object types
+                                if isinstance(prop, dict):
+                                    if prop.get('original_property_id'):
+                                        prop_id = str(prop['original_property_id'])
+                                    elif prop.get('id'):
+                                        prop_id = str(prop['id'])
+                                elif hasattr(prop, 'original_property_id') and prop.original_property_id:
+                                    prop_id = str(prop.original_property_id)
+                                elif hasattr(prop, 'id') and prop.id:
+                                    prop_id = str(prop.id)
+                                
+                                if prop_id:
+                                    property_ids.append(prop_id)
+                                    logger.info(f"🆔 Batch 1 Property {i+1}: ID = {prop_id}")
+                                else:
+                                    logger.error(f"❌ Batch 1 Property {i+1}: failed to extract ID")
+                            
+                            if len(property_ids) >= 1:
+                                try:
+                                    # Send carousel for first batch
+                                    carousel_result = await carousel_tool.send_property_carousel(
+                                        session.user_id,
+                                        property_ids,
+                                        max_properties=10
+                                    )
+                                    
+                                    if carousel_result['success']:
+                                        logger.info(f"✅ SOPHISTICATED_CAROUSEL_SENT: {carousel_result['property_count']} properties (batch 1 of {len(properties)} total)")
+                                        
+                                        # Update conversation stage
+                                        session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
+                                        session.context['properties_shown'] = 10
+                                        
+                                        # Enhanced carousel response with pagination info
+                                        remaining = len(properties) - 10
+                                        if remaining > 0:
+                                            response = f"{intelligent_response}\n\n📱 I've sent you the first 10 properties as cards. There are {remaining} more properties available.\n\n💬 Say *\"show more properties\"* to see the next batch!"
+                                        else:
+                                            response = f"{intelligent_response}\n\n📱 I've sent you all {len(properties)} properties as cards."
+                                        
+                                        logger.info(f"🏠 SOPHISTICATED_PROPERTIES_FOUND: {len(properties)} total properties")
+                                        return response
+                                    else:
+                                        logger.error(f"❌ Sophisticated carousel failed: {carousel_result['message']}")
+                                        # Fall through to text response
+                                except Exception as e:
+                                    logger.error(f"❌ Sophisticated carousel error: {str(e)}")
+                                    # Fall through to text response
+                        
+                        # Text response for <7 properties or carousel failure
+                        session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
+                        response = intelligent_response
+                        agent_used = "sophisticated_search_text"
+                        
+                        logger.info(f"🏠 SOPHISTICATED_PROPERTIES_FOUND: {len(properties)} properties")
+                    else:
+                        # No properties found - sophisticated search provides intelligent alternatives
+                        session.context['conversation_stage'] = ConversationStage.COLLECTING_REQUIREMENTS
+                        response = intelligent_response
+                        agent_used = "sophisticated_search_no_results"
+                
+                # FALLBACK: Use optimized property search if sophisticated search not available
+                elif conv_response.search_params:
+                    logger.info("🔄 Using FALLBACK optimized search")
                     
-                    response = properties_text
-                    agent_used = "property_search_optimized"
+                    # Execute optimized property search
+                    search_results = await self.optimized_search.search_properties(
+                        conv_response.search_params, message
+                    )
                     
-                    logger.info(f"🏠 PROPERTIES_FOUND: {len(search_results['properties'])} properties in {search_results['execution_time_ms']:.0f}ms")
-                else:
-                    # No properties found - provide better guidance
-                    session.context['conversation_stage'] = ConversationStage.COLLECTING_REQUIREMENTS
-                    
-                    # Generate helpful no-results response
-                    req = conv_response.requirements
-                    suggestions = []
-                    
-                    if req.budget_min and req.budget_max:
-                        new_max = int(req.budget_max * 1.3)  # Suggest 30% higher budget
-                        suggestions.append(f"• Increase budget to {new_max//1000}k AED")
-                    
-                    if req.location and req.location.lower() in ['marina', 'downtown', 'jbr']:
-                        suggestions.append("• Try nearby areas like JLT, Business Bay, or DIFC")
-                    
-                    if req.bedrooms and req.bedrooms >= 3:
-                        suggestions.append(f"• Consider {req.bedrooms-1} bedroom apartments")
-                    
-                    suggestions_text = "\n".join(suggestions) if suggestions else "• Try adjusting your budget or location\n• Consider different property types"
-                    
-                    response = f"""🔍 No properties found matching your exact criteria.
+                    if search_results['properties']:
+                        # Store properties in session for follow-up
+                        session.context['active_properties'] = search_results['properties']
+                        session.context['last_search_params'] = conv_response.search_params
+                        
+                        # CAROUSEL LOGIC: Use carousel for 1+ properties, limit to first 10
+                        if len(search_results['properties']) >= 1:
+                            from tools.whatsapp_carousel_tool import carousel_tool
+                            from utils.whatsapp_formatter import whatsapp_formatter
+                            
+                            logger.info(f"🎠 AUTO_CAROUSEL: {len(search_results['properties'])} properties found (>=7), sending carousel")
+                            
+                            # Extract property IDs - take first 10 properties
+                            limited_properties = search_results['properties'][:10]
+                            property_ids = []
+                            
+                            for i, prop in enumerate(limited_properties):
+                                prop_id = None
+                                
+                                # Handle different property object types
+                                if hasattr(prop, 'original_property_id') and prop.original_property_id:
+                                    prop_id = str(prop.original_property_id)
+                                    logger.info(f"🆔 Property {i+1}: using original_property_id = {prop_id}")
+                                elif hasattr(prop, 'id') and prop.id:
+                                    prop_id = str(prop.id)
+                                    logger.info(f"🆔 Property {i+1}: using id = {prop_id}")
+                                elif isinstance(prop, dict):
+                                    # Handle dict objects from optimized search
+                                    if prop.get('original_property_id'):
+                                        prop_id = str(prop['original_property_id'])
+                                        logger.info(f"🆔 Property {i+1}: using dict original_property_id = {prop_id}")
+                                    elif prop.get('id'):
+                                        prop_id = str(prop['id'])
+                                        logger.info(f"🆔 Property {i+1}: using dict id = {prop_id}")
+                                    else:
+                                        logger.warning(f"⚠️ Property {i+1}: no ID found in dict: {list(prop.keys())}")
+                                else:
+                                    logger.warning(f"⚠️ Property {i+1}: unknown object type: {type(prop)}")
+                                
+                                if prop_id:
+                                    property_ids.append(prop_id)
+                                else:
+                                    logger.error(f"❌ Property {i+1}: failed to extract ID")
+                            
+                            if len(property_ids) >= 1:
+                                try:
+                                    # Send carousel
+                                    carousel_result = await carousel_tool.send_property_carousel(
+                                        session.user_id,
+                                        property_ids,
+                                        max_properties=10
+                                    )
+                                
+                                    if carousel_result['success']:
+                                        logger.info(f"✅ CAROUSEL_SENT: {carousel_result['property_count']} properties")
+                                        
+                                        # Update conversation stage
+                                        session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
+                                        
+                                        # Store limited properties for follow-up queries
+                                        session.context['active_properties'] = limited_properties
+                                        
+                                        # Return simple carousel confirmation message
+                                        response = f"🏠 *Found {len(search_results['properties'])} properties!* I've sent you the first {len(property_ids)} properties as cards with all the details.\n\n📱 Tap *Know More* button to view details or *Schedule Visit* button to book a viewing."
+                                        agent_used = "property_search_optimized_carousel"
+                                        
+                                        logger.info(f"🏠 PROPERTIES_FOUND: {len(search_results['properties'])} properties in {search_results['execution_time_ms']:.0f}ms")
+                                        # Return early to avoid text formatting
+                                        return response
+                                    else:
+                                        logger.error(f"❌ Carousel failed: {carousel_result['message']}")
+                                        # Fall through to text response as fallback
+                                except Exception as e:
+                                    logger.error(f"❌ Carousel error: {str(e)}")
+                                    # Fall through to text response as fallback
+                            else:
+                                logger.warning(f"Not enough property IDs for carousel: {len(property_ids)}")
+                                # Fall through to text response
+                        
+                        # Format properties for WhatsApp (fallback or <7 properties)
+                        properties_text = self.optimized_search.format_properties_for_whatsapp(
+                            search_results['properties'], 
+                            conv_response.requirements.dict()
+                        )
+                        
+                        # Update conversation stage
+                        session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
+                        
+                        response = properties_text
+                        agent_used = "property_search_optimized"
+                        
+                        logger.info(f"🏠 PROPERTIES_FOUND: {len(search_results['properties'])} properties in {search_results['execution_time_ms']:.0f}ms")
+                    else:
+                        # No properties found - provide better guidance
+                        session.context['conversation_stage'] = ConversationStage.COLLECTING_REQUIREMENTS
+                        
+                        # Generate helpful no-results response
+                        req = conv_response.requirements
+                        suggestions = []
+                        
+                        if req.budget_min and req.budget_max:
+                            new_max = int(req.budget_max * 1.3)  # Suggest 30% higher budget
+                            suggestions.append(f"• Increase budget to {new_max//1000}k AED")
+                        
+                        if req.location and req.location.lower() in ['marina', 'downtown', 'jbr']:
+                            suggestions.append("• Try nearby areas like JLT, Business Bay, or DIFC")
+                        
+                        if req.bedrooms and req.bedrooms >= 3:
+                            suggestions.append(f"• Consider {req.bedrooms-1} bedroom apartments")
+                        
+                        suggestions_text = "\n".join(suggestions) if suggestions else "• Try adjusting your budget or location\n• Consider different property types"
+                        
+                        response = f"""🔍 No properties found matching your exact criteria.
 
 Here are some suggestions:
 {suggestions_text}
 
 Would you like me to search with adjusted criteria, or would you prefer to modify your requirements?"""
-                    agent_used = "no_results_enhanced"
+                        agent_used = "no_results_enhanced"
             else:
-                # Regular conversation response
-                response = conv_response.message
-                agent_used = "unified_conversation"
+                # Handle pagination requests
+                if conv_response.message == "pagination_request":
+                    logger.info("📄 Handling pagination carousel request")
+                    
+                    # Get pagination data from session
+                    property_ids = session.context.get('pagination_batch_ids', [])
+                    batch_start = session.context.get('pagination_batch_start', 1)
+                    batch_end = session.context.get('pagination_batch_end', 1)
+                    total_properties = session.context.get('pagination_total', 0)
+                    
+                    if property_ids and len(property_ids) >= 3:
+                        try:
+                            from tools.whatsapp_carousel_tool import carousel_tool
+                            
+                            # Send pagination carousel
+                            carousel_result = await carousel_tool.send_property_carousel(
+                                session.user_id,
+                                property_ids,
+                                max_properties=10
+                            )
+                            
+                            if carousel_result['success']:
+                                logger.info(f"✅ PAGINATION_CAROUSEL_SENT: properties {batch_start}-{batch_end} of {total_properties}")
+                                
+                                # Update session with new properties shown count
+                                session.context['properties_shown'] = batch_end
+                                
+                                # Calculate remaining properties
+                                remaining = total_properties - batch_end
+                                if remaining > 0:
+                                    response = f"📱 Here are properties {batch_start}-{batch_end} of {total_properties}!\n\n💬 Say *\"show more properties\"* to see {remaining} more properties."
+                                else:
+                                    response = f"📱 Here are properties {batch_start}-{batch_end} of {total_properties}!\n\nYou've now seen all available properties! 🎉"
+                                
+                                agent_used = "pagination_carousel"
+                            else:
+                                logger.error(f"❌ Pagination carousel failed: {carousel_result['message']}")
+                                response = "I had trouble sending the property cards. Let me know what you'd like to see!"
+                                agent_used = "pagination_failed"
+                        except Exception as e:
+                            logger.error(f"❌ Pagination carousel error: {str(e)}")
+                            response = "I had trouble showing more properties. Please try again!"
+                            agent_used = "pagination_error"
+                    else:
+                        logger.warning("📄 Pagination request but no property IDs available")
+                        response = "I don't have more properties to show. Please search again!"
+                        agent_used = "pagination_no_data"
+                else:
+                    # Regular conversation response
+                    response = conv_response.message
+                    agent_used = "unified_conversation"
                 
                 # Update conversation stage in session
                 session.context['conversation_stage'] = conv_response.stage
@@ -238,6 +395,105 @@ Would you like me to search with adjusted criteria, or would you prefer to modif
             except Exception as fallback_error:
                 logger.error(f"❌ Fallback also failed: {str(fallback_error)}")
                 return "I apologize for the technical issue. Let me help you find properties. What are you looking for?"
+    
+    def _reorder_properties_by_priority(self, properties, alternatives_found, criteria):
+        """
+        Reorder properties by priority: budget increase first, then location expansion, then property type
+        """
+        try:
+            if not alternatives_found or not criteria:
+                return properties
+            
+            budget_max = getattr(criteria, 'budget_max', None) or getattr(criteria, 'budget_min', None)
+            original_location = getattr(criteria, 'location', None)
+            original_property_type = getattr(criteria, 'property_type', None)
+            
+            budget_properties = []
+            location_properties = []
+            property_type_properties = []
+            other_properties = []
+            
+            for prop in properties:
+                prop_price = self._get_property_price(prop)
+                prop_location = self._get_property_location(prop)
+                prop_type = self._get_property_type(prop)
+                
+                # Priority 1: Budget increase properties (price above original budget)
+                if budget_max and prop_price and prop_price > budget_max:
+                    # Check if it's in original location (budget increase, not location change)
+                    if original_location and prop_location and original_location.lower() in prop_location.lower():
+                        budget_properties.append(prop)
+                        continue
+                
+                # Priority 2: Location expansion properties (different location, within budget considerations)
+                if (original_location and prop_location and 
+                    original_location.lower() not in prop_location.lower()):
+                    location_properties.append(prop)
+                    continue
+                
+                # Priority 3: Property type expansion (different property type)
+                if (original_property_type and prop_type and 
+                    prop_type.lower() != original_property_type.lower()):
+                    property_type_properties.append(prop)
+                    continue
+                
+                # Everything else
+                other_properties.append(prop)
+            
+            # Combine in priority order
+            ordered_properties = budget_properties + location_properties + property_type_properties + other_properties
+            
+            logger.info(f"🔄 Property reordering: {len(budget_properties)} budget, {len(location_properties)} location, {len(property_type_properties)} type, {len(other_properties)} other")
+            
+            return ordered_properties
+            
+        except Exception as e:
+            logger.error(f"❌ Error reordering properties: {e}")
+            return properties  # Return original order on error
+    
+    def _get_property_price(self, prop):
+        """Extract property price from property object"""
+        try:
+            if isinstance(prop, dict):
+                return prop.get('sale_price_aed') or prop.get('rent_price_aed')
+            else:
+                return getattr(prop, 'sale_price_aed', None) or getattr(prop, 'rent_price_aed', None)
+        except:
+            return None
+    
+    def _get_property_location(self, prop):
+        """Extract property location from property object"""
+        try:
+            if isinstance(prop, dict):
+                address = prop.get('address', {})
+                if isinstance(address, str):
+                    import json
+                    try:
+                        address = json.loads(address)
+                    except:
+                        return address
+                return address.get('locality', '') if isinstance(address, dict) else ''
+            else:
+                address = getattr(prop, 'address', {})
+                if isinstance(address, str):
+                    import json
+                    try:
+                        address = json.loads(address)
+                    except:
+                        return address
+                return address.get('locality', '') if isinstance(address, dict) else ''
+        except:
+            return ''
+    
+    def _get_property_type(self, prop):
+        """Extract property type from property object"""
+        try:
+            if isinstance(prop, dict):
+                return prop.get('property_type', '')
+            else:
+                return getattr(prop, 'property_type', '')
+        except:
+            return ''
 
 
 # =============================================================================
@@ -866,7 +1122,7 @@ class StatisticsAgent:
                     elif hasattr(prop, 'id') and prop.id:
                         property_ids.append(str(prop.id))
                 
-                if len(property_ids) >= 7:
+                if len(property_ids) >= 1:
                     try:
                         # Send carousel
                         carousel_result = await carousel_tool.send_property_carousel(
