@@ -101,43 +101,40 @@ class WhatsAppAgentSystem:
                             
                             logger.info(f"🎠 SOPHISTICATED_CAROUSEL: {len(properties)} total properties, sending first 10 via carousel")
                             
-                            # Reorder properties by priority (budget increase first, then location)
-                            alternatives_found = {}
-                            if hasattr(conv_response, 'search_result') and hasattr(conv_response.search_result, 'alternatives_found'):
-                                alternatives_found = conv_response.search_result.alternatives_found
-                            
-                            ordered_properties = self._reorder_properties_by_priority(
-                                properties, 
-                                alternatives_found,
-                                conv_response.sophisticated_search_criteria
-                            )
-                            
+                            # Properties are already reordered by priority in unified_conversation_engine
                             # Store ALL properties with pagination info
-                            session.context['all_available_properties'] = ordered_properties
+                            session.context['all_available_properties'] = properties
                             session.context['properties_shown'] = 0
                             session.context['properties_per_batch'] = 10
                             
                             # Extract property IDs for first batch (first 10)
-                            first_batch = ordered_properties[:10]
+                            first_batch = properties[:10]
                             property_ids = []
                             
                             for i, prop in enumerate(first_batch):
                                 prop_id = None
+                                id_type = None
                                 
-                                # Handle different property object types
+                                # Handle different property object types - prioritize original_property_id
                                 if isinstance(prop, dict):
                                     if prop.get('original_property_id'):
                                         prop_id = str(prop['original_property_id'])
+                                        id_type = "original_property_id"
                                     elif prop.get('id'):
                                         prop_id = str(prop['id'])
+                                        id_type = "id (fallback)"
+                                        logger.warning(f"⚠️ Property {i+1}: using fallback 'id' instead of 'original_property_id'")
                                 elif hasattr(prop, 'original_property_id') and prop.original_property_id:
                                     prop_id = str(prop.original_property_id)
+                                    id_type = "original_property_id"
                                 elif hasattr(prop, 'id') and prop.id:
                                     prop_id = str(prop.id)
+                                    id_type = "id (fallback)"
+                                    logger.warning(f"⚠️ Property {i+1}: using fallback 'id' instead of 'original_property_id'")
                                 
                                 if prop_id:
                                     property_ids.append(prop_id)
-                                    logger.info(f"🆔 Batch 1 Property {i+1}: ID = {prop_id}")
+                                    logger.info(f"🆔 Batch 1 Property {i+1}: {id_type} = {prop_id}")
                                 else:
                                     logger.error(f"❌ Batch 1 Property {i+1}: failed to extract ID")
                             
@@ -168,14 +165,24 @@ class WhatsAppAgentSystem:
                                         return response
                                     else:
                                         logger.error(f"❌ Sophisticated carousel failed: {carousel_result['message']}")
+                                        logger.info("🔄 Falling back to text response with property details")
                                         # Fall through to text response
                                 except Exception as e:
                                     logger.error(f"❌ Sophisticated carousel error: {str(e)}")
+                                    logger.info("🔄 Falling back to text response with property details")
                                     # Fall through to text response
                         
                         # Text response for <7 properties or carousel failure
                         session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
-                        response = intelligent_response
+                        
+                        # Ensure we're showing property details, not market analysis
+                        if len(properties) > 0:
+                            logger.info(f"📋 Using text response for {len(properties)} properties")
+                            response = intelligent_response
+                        else:
+                            logger.warning("⚠️ No properties in text response fallback")
+                            response = intelligent_response
+                        
                         agent_used = "sophisticated_search_text"
                         
                         logger.info(f"🏠 SOPHISTICATED_PROPERTIES_FOUND: {len(properties)} properties")
@@ -396,104 +403,7 @@ Would you like me to search with adjusted criteria, or would you prefer to modif
                 logger.error(f"❌ Fallback also failed: {str(fallback_error)}")
                 return "I apologize for the technical issue. Let me help you find properties. What are you looking for?"
     
-    def _reorder_properties_by_priority(self, properties, alternatives_found, criteria):
-        """
-        Reorder properties by priority: budget increase first, then location expansion, then property type
-        """
-        try:
-            if not alternatives_found or not criteria:
-                return properties
-            
-            budget_max = getattr(criteria, 'budget_max', None) or getattr(criteria, 'budget_min', None)
-            original_location = getattr(criteria, 'location', None)
-            original_property_type = getattr(criteria, 'property_type', None)
-            
-            budget_properties = []
-            location_properties = []
-            property_type_properties = []
-            other_properties = []
-            
-            for prop in properties:
-                prop_price = self._get_property_price(prop)
-                prop_location = self._get_property_location(prop)
-                prop_type = self._get_property_type(prop)
-                
-                # Priority 1: Budget increase properties (price above original budget)
-                if budget_max and prop_price and prop_price > budget_max:
-                    # Check if it's in original location (budget increase, not location change)
-                    if original_location and prop_location and original_location.lower() in prop_location.lower():
-                        budget_properties.append(prop)
-                        continue
-                
-                # Priority 2: Location expansion properties (different location, within budget considerations)
-                if (original_location and prop_location and 
-                    original_location.lower() not in prop_location.lower()):
-                    location_properties.append(prop)
-                    continue
-                
-                # Priority 3: Property type expansion (different property type)
-                if (original_property_type and prop_type and 
-                    prop_type.lower() != original_property_type.lower()):
-                    property_type_properties.append(prop)
-                    continue
-                
-                # Everything else
-                other_properties.append(prop)
-            
-            # Combine in priority order
-            ordered_properties = budget_properties + location_properties + property_type_properties + other_properties
-            
-            logger.info(f"🔄 Property reordering: {len(budget_properties)} budget, {len(location_properties)} location, {len(property_type_properties)} type, {len(other_properties)} other")
-            
-            return ordered_properties
-            
-        except Exception as e:
-            logger.error(f"❌ Error reordering properties: {e}")
-            return properties  # Return original order on error
-    
-    def _get_property_price(self, prop):
-        """Extract property price from property object"""
-        try:
-            if isinstance(prop, dict):
-                return prop.get('sale_price_aed') or prop.get('rent_price_aed')
-            else:
-                return getattr(prop, 'sale_price_aed', None) or getattr(prop, 'rent_price_aed', None)
-        except:
-            return None
-    
-    def _get_property_location(self, prop):
-        """Extract property location from property object"""
-        try:
-            if isinstance(prop, dict):
-                address = prop.get('address', {})
-                if isinstance(address, str):
-                    import json
-                    try:
-                        address = json.loads(address)
-                    except:
-                        return address
-                return address.get('locality', '') if isinstance(address, dict) else ''
-            else:
-                address = getattr(prop, 'address', {})
-                if isinstance(address, str):
-                    import json
-                    try:
-                        address = json.loads(address)
-                    except:
-                        return address
-                return address.get('locality', '') if isinstance(address, dict) else ''
-        except:
-            return ''
-    
-    def _get_property_type(self, prop):
-        """Extract property type from property object"""
-        try:
-            if isinstance(prop, dict):
-                return prop.get('property_type', '')
-            else:
-                return getattr(prop, 'property_type', '')
-        except:
-            return ''
+
 
 
 # =============================================================================

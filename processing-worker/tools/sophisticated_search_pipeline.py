@@ -524,11 +524,8 @@ class SophisticatedSearchPipeline:
             query = query.eq('sale_or_rent', sale_or_rent)
         
         if criteria.location:
-            # Handle location search - try exact match and partial match
-            query = query.or_(
-                f"address->>locality.ilike.%{criteria.location}%,"
-                f"building_name.ilike.%{criteria.location}%"
-            )
+            # Handle location search - use locality filter with text extraction (->>)
+            query = query.ilike('address->>locality', f"%{criteria.location}%")
         
         if criteria.property_type:
             query = query.eq('property_type', criteria.property_type)

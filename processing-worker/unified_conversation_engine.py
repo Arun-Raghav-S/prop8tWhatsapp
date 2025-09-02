@@ -1140,11 +1140,22 @@ Generate a concise, helpful response. Guide them to ask about specific propertie
             logger.info(f"   Properties found: {search_result.count}")
             logger.info(f"   Execution time: {search_result.execution_time_ms:.0f}ms")
             
-            # Generate intelligent response message
+            # CRITICAL FIX: Reorder properties by priority BEFORE generating response
+            # This ensures response analysis and carousel properties match
+            ordered_properties = self._reorder_properties_by_priority(
+                search_result.properties, 
+                search_result.alternatives_found if hasattr(search_result, 'alternatives_found') else {},
+                criteria
+            )
+            
+            # Update search result with ordered properties for response generation
+            search_result.properties = ordered_properties
+            
+            # Generate intelligent response message using ordered properties
             intelligent_response = generate_sophisticated_response(search_result, criteria)
             
-            # Return both the response and property objects for carousel
-            return intelligent_response, search_result.properties
+            # Return both the response and ordered property objects for carousel
+            return intelligent_response, ordered_properties
             
         except Exception as e:
             logger.error(f"❌ Sophisticated search execution failed: {e}")
@@ -1160,6 +1171,105 @@ Generate a concise, helpful response. Guide them to ask about specific propertie
 What would you like to try?"""
             
             return fallback_response, []
+    
+    def _reorder_properties_by_priority(self, properties, alternatives_found, criteria):
+        """
+        Reorder properties by priority: budget increase first, then location expansion, then property type
+        """
+        try:
+            if not alternatives_found or not criteria:
+                return properties
+            
+            budget_max = getattr(criteria, 'budget_max', None) or getattr(criteria, 'budget_min', None)
+            original_location = getattr(criteria, 'location', None)
+            original_property_type = getattr(criteria, 'property_type', None)
+            
+            budget_properties = []
+            location_properties = []
+            property_type_properties = []
+            other_properties = []
+            
+            for prop in properties:
+                prop_price = self._get_property_price(prop)
+                prop_location = self._get_property_location(prop)
+                prop_type = self._get_property_type(prop)
+                
+                # Priority 1: Budget increase properties (price above original budget)
+                if budget_max and prop_price and prop_price > budget_max:
+                    # Check if it's in original location (budget increase, not location change)
+                    if original_location and prop_location and original_location.lower() in prop_location.lower():
+                        budget_properties.append(prop)
+                        continue
+                
+                # Priority 2: Location expansion properties (different location, within budget considerations)
+                if (original_location and prop_location and 
+                    original_location.lower() not in prop_location.lower()):
+                    location_properties.append(prop)
+                    continue
+                
+                # Priority 3: Property type expansion (different property type)
+                if (original_property_type and prop_type and 
+                    prop_type.lower() != original_property_type.lower()):
+                    property_type_properties.append(prop)
+                    continue
+                
+                # Everything else
+                other_properties.append(prop)
+            
+            # Combine in priority order
+            ordered_properties = budget_properties + location_properties + property_type_properties + other_properties
+            
+            logger.info(f"🔄 Property reordering: {len(budget_properties)} budget, {len(location_properties)} location, {len(property_type_properties)} type, {len(other_properties)} other")
+            
+            return ordered_properties
+            
+        except Exception as e:
+            logger.error(f"❌ Error reordering properties: {e}")
+            return properties  # Return original order on error
+    
+    def _get_property_price(self, prop):
+        """Extract property price from property object"""
+        try:
+            if isinstance(prop, dict):
+                return prop.get('sale_price_aed') or prop.get('rent_price_aed')
+            else:
+                return getattr(prop, 'sale_price_aed', None) or getattr(prop, 'rent_price_aed', None)
+        except:
+            return None
+    
+    def _get_property_location(self, prop):
+        """Extract property location from property object"""
+        try:
+            if isinstance(prop, dict):
+                address = prop.get('address', {})
+                if isinstance(address, str):
+                    import json
+                    try:
+                        address = json.loads(address)
+                    except:
+                        return address
+                return address.get('locality', '') if isinstance(address, dict) else ''
+            else:
+                address = getattr(prop, 'address', {})
+                if isinstance(address, str):
+                    import json
+                    try:
+                        address = json.loads(address)
+                    except:
+                        return address
+                return address.get('locality', '') if isinstance(address, dict) else ''
+        except:
+            return ''
+    
+    def _get_property_type(self, prop):
+        """Extract property type from property object"""
+        try:
+            if isinstance(prop, dict):
+                return prop.get('property_type', '')
+            else:
+                return getattr(prop, 'property_type', '')
+        except:
+            return ''
     
     async def _handle_pagination_request(self, message: str, session: ConversationSession, requirements: UserRequirements) -> ConversationResponse:
         """

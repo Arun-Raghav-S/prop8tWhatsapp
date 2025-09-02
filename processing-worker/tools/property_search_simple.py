@@ -118,7 +118,7 @@ class SimplePropertySearchAgent:
                 query = query.eq('sale_or_rent', params['sale_or_rent'])
             
             if params.get('locality'):
-                query = query.ilike('address->locality', f"%{params['locality']}%")
+                query = query.ilike('address->>locality', f"%{params['locality']}%")
             
             # Execute query  
             response = query.limit(15).execute()

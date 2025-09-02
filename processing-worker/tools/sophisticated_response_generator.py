@@ -56,21 +56,14 @@ class SophisticatedResponseGenerator:
     
     def _generate_exact_match_response(self, search_result: SearchResult, criteria: SearchCriteria) -> str:
         """Generate response for exact matches"""
-        properties = search_result.properties[:5]  # Show top 5
-        
         # Create header based on criteria
         header = self._create_search_summary(criteria, exact_match=True)
         header += f" ✅ Found {search_result.count} perfect matches!\n\n"
         
-        # Format properties
-        properties_text = ""
-        for i, prop in enumerate(properties, 1):
-            properties_text += self._format_property_item(prop, i)
-        
-        # Add interaction prompts
+        # Add interaction prompts (no property listings since carousel handles that)
         footer = self._create_interaction_prompts(search_result.count)
         
-        return header + properties_text + footer
+        return header + footer
     
     def _generate_alternative_response(self, search_result: SearchResult, criteria: SearchCriteria) -> str:
         """Generate response for single-constraint alternatives"""
