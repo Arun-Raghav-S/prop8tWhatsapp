@@ -293,97 +293,97 @@ class UnifiedConversationEngine:
     async def _handle_showing_results(self, message: str, session: ConversationSession, requirements: UserRequirements) -> ConversationResponse:
         """
         Handle when properties are being shown - user might click "view more" or ask questions
+        
+        Note: AI intent analysis at top level should catch fresh searches and pagination,
+        but this function provides fallback logic for robustness.
         """
         logger.info("🎯 STAGE 4: Showing Results")
         
-        message_lower = message.lower()
+        # FALLBACK: If AI missed a fresh search (location/budget/type change), extract and check
+        logger.info("🔍 FALLBACK: Checking if AI missed a fresh search request")
+        potential_new_requirements = await self._extract_requirements_ai(message, UserRequirements())
         
-        # CRITICAL FIX: Check if user wants new search with different criteria
-        new_search_keywords = [
-            'show me', 'search for', 'find me', 'look for', 'i want', 'get me',
-            'apartments', 'villas', 'properties', 'buy', 'rent', 'sale'
-        ]
+        # Check for significant changes that indicate fresh search
+        has_location_change = (
+            potential_new_requirements.location and 
+            potential_new_requirements.location != requirements.location and
+            potential_new_requirements.confidence_location >= 0.7 and
+            potential_new_requirements.location.lower() not in ["any", "anywhere", "all areas", "nearby"]
+        )
         
-        if any(keyword in message_lower for keyword in new_search_keywords):
-            logger.info("🔄 NEW_SEARCH detected in SHOWING_RESULTS - switching to sophisticated search mode")
-            session.context['conversation_stage'] = ConversationStage.READY_FOR_SEARCH
+        has_budget_change = (
+            (potential_new_requirements.budget_min and potential_new_requirements.budget_min != requirements.budget_min) or
+            (potential_new_requirements.budget_max and potential_new_requirements.budget_max != requirements.budget_max)
+        ) and potential_new_requirements.confidence_budget >= 0.7
+        
+        has_property_type_change = (
+            potential_new_requirements.property_type and 
+            potential_new_requirements.property_type != requirements.property_type and
+            potential_new_requirements.confidence_property >= 0.7
+        )
+        
+        has_transaction_change = (
+            potential_new_requirements.transaction_type and 
+            potential_new_requirements.transaction_type != requirements.transaction_type and
+            potential_new_requirements.confidence_transaction >= 0.7
+        )
+        
+        # If any significant change detected, trigger fresh search
+        if has_location_change or has_budget_change or has_property_type_change or has_transaction_change:
+            logger.info(f"🔄 FALLBACK_FRESH_SEARCH detected:")
+            logger.info(f"   Location change: {has_location_change}")
+            logger.info(f"   Budget change: {has_budget_change}")  
+            logger.info(f"   Property type change: {has_property_type_change}")
+            logger.info(f"   Transaction change: {has_transaction_change}")
             
-            # Extract new requirements and trigger sophisticated search
-            updated_requirements = await self._extract_requirements_ai(message, UserRequirements())
-            self._save_requirements_to_session(session, updated_requirements)
+            # Merge changes with existing requirements
+            merged_requirements = requirements.copy()
+            if has_location_change:
+                merged_requirements.location = potential_new_requirements.location
+                merged_requirements.confidence_location = potential_new_requirements.confidence_location
+            if has_budget_change:
+                if potential_new_requirements.budget_min:
+                    merged_requirements.budget_min = potential_new_requirements.budget_min
+                if potential_new_requirements.budget_max:
+                    merged_requirements.budget_max = potential_new_requirements.budget_max
+                merged_requirements.confidence_budget = potential_new_requirements.confidence_budget
+            if has_property_type_change:
+                merged_requirements.property_type = potential_new_requirements.property_type
+                merged_requirements.confidence_property = potential_new_requirements.confidence_property
+            if has_transaction_change:
+                merged_requirements.transaction_type = potential_new_requirements.transaction_type
+                merged_requirements.confidence_transaction = potential_new_requirements.confidence_transaction
+            
+            self._save_requirements_to_session(session, merged_requirements)
+            session.context['conversation_stage'] = ConversationStage.READY_FOR_SEARCH
             
             # Prepare sophisticated search criteria
-            search_criteria = self._convert_to_sophisticated_search_criteria(updated_requirements)
+            search_criteria = self._convert_to_sophisticated_search_criteria(merged_requirements)
             
             return ConversationResponse(
-                message="Let me find those properties for you.",
+                message="Let me find properties with your updated criteria.",
                 stage=ConversationStage.READY_FOR_SEARCH,
-                requirements=updated_requirements,
+                requirements=merged_requirements,
                 should_search_properties=True,
-                search_params=self._convert_to_search_params(updated_requirements),
+                search_params=self._convert_to_search_params(merged_requirements),
                 sophisticated_search_criteria=search_criteria.to_dict(),
                 use_sophisticated_search=True
             )
         
-        # Check for BUDGET CHANGES first (before property references)
-        budget_change_keywords = ['budget', 'increase', 'decrease', 'change budget', 'set budget', 'new budget']
-        if any(keyword in message_lower for keyword in budget_change_keywords):
-            logger.info("💰 Budget change detected - triggering new search")
-            session.context['conversation_stage'] = ConversationStage.READY_FOR_SEARCH
-            
-            # Extract new requirements including the budget change
-            updated_requirements = await self._extract_requirements_ai(message, requirements)
-            self._save_requirements_to_session(session, updated_requirements)
-            
-            # Prepare sophisticated search criteria with new budget
-            search_criteria = self._convert_to_sophisticated_search_criteria(updated_requirements)
-            
-            return ConversationResponse(
-                message="Let me find properties with your updated budget.",
-                stage=ConversationStage.READY_FOR_SEARCH,
-                requirements=updated_requirements,
-                should_search_properties=True,
-                search_params=self._convert_to_search_params(updated_requirements),
-                sophisticated_search_criteria=search_criteria.to_dict(),
-                use_sophisticated_search=True
-            )
-        
-        # Check if user wants to see MORE properties from pagination
-        # Handle typos and variations: "shoe more", "show mor", "more prop", etc.
-        pagination_keywords = [
+        # FALLBACK: Check for pagination request that AI might have missed
+        message_lower = message.lower().strip()
+        pagination_indicators = [
             'show more', 'more properties', 'next batch', 'more results',
-            'shoe more', 'show mor', 'more prop', 'next prop', 
-            'see more', 'view more', 'load more', 'get more'
+            'see more', 'view more', 'load more', 'get more',
+            # Handle typos
+            'shoe more', 'show mor', 'more prop', 'next prop'
         ]
         
-        # Also check for patterns like "shoe shoe more" or repeated words
-        normalized_message = ' '.join(message_lower.split())  # Remove extra spaces
-        
-        if (any(phrase in normalized_message for phrase in pagination_keywords) or
-            ('more' in normalized_message and any(word in normalized_message for word in ['shoe', 'show', 'properties', 'prop']))):
-            logger.info(f"📄 PAGINATION detected in message: '{message}' -> normalized: '{normalized_message}'")
-            # Handle pagination - show next batch of properties
+        if any(indicator in message_lower for indicator in pagination_indicators):
+            logger.info("📄 FALLBACK: Pagination request detected that AI missed")
             return await self._handle_pagination_request(message, session, requirements)
         
-        # Check if user wants to see different properties from current results
-        if any(word in message_lower for word in ['other', 'different', 'cheaper', 'expensive']):
-            # Modify search and get new results using sophisticated search
-            session.context['conversation_stage'] = ConversationStage.READY_FOR_SEARCH
-            
-            # Prepare sophisticated search criteria
-            search_criteria = self._convert_to_sophisticated_search_criteria(requirements)
-            
-            return ConversationResponse(
-                message="Let me find different properties for you.",
-                stage=ConversationStage.READY_FOR_SEARCH,
-                requirements=requirements,
-                should_search_properties=True,
-                search_params=self._convert_to_search_params(requirements),
-                sophisticated_search_criteria=search_criteria.to_dict(),
-                use_sophisticated_search=True
-            )
-        
-        # User asking about specific property
+        # Default: User asking about specific property or general question
         session.context['conversation_stage'] = ConversationStage.FOLLOW_UP
         return ConversationResponse(
             message=await self._generate_property_specific_response(message, session),
@@ -419,12 +419,12 @@ New message: "{message}"
 
 Extract and return JSON with these fields:
 {{
-    "transaction_type": "buy|rent|null",
-    "location": "string|null (Dubai area)",
-    "budget_min": "number|null (in AED)",
-    "budget_max": "number|null (in AED)", 
-    "property_type": "string|null (villa, apartment, townhouse, penthouse, commercial, plot, residential, villa village, etc)",
-    "bedrooms": "number|null",
+    "transaction_type": null | "buy" | "rent",
+    "location": null | "al Barsha" | "Marina" | "JBR" | "Downtown" | "Business Bay" | "etc",
+    "budget_min": null | 80000 | 100000,
+    "budget_max": null | 100000 | 150000, 
+    "property_type": null | "villa" | "apartment" | "townhouse" | "penthouse" | "studio",
+    "bedrooms": null | 1 | 2 | 3 | 4,
     "special_features": ["array of strings"],
     "confidence_transaction": "float 0-1",
     "confidence_location": "float 0-1", 
@@ -442,15 +442,41 @@ BUDGET:
 - Always return budget values in actual AED (not thousands)
 - Examples: "80k" → budget_max: 80000, "1.5M" → budget_max: 1500000
 
-LOCATION:
-- "any location", "anywhere", "all areas", "any area" → location: "any"
-- "nearby areas", "surrounding areas" → set location: "nearby" + keep current area context
-- "expand search", "look nearby" → set location: "nearby"
-- Specific areas like "Marina", "Downtown" → use as is
+LOCATION EXTRACTION (CRITICAL):
+- Extract ANY location mentioned: "al Barsha", "Marina", "JBR", "Downtown", "Business Bay", "Jumeirah", etc.
+- Patterns: "options in [area]", "properties in [area]", "what about [area]", "different area", "other location"
+- "What are the other options in al Barsha" → location: "al Barsha"
+- "Show me Marina properties" → location: "Marina"  
+- "Any apartments in JBR" → location: "JBR"
+- Set high confidence (0.9+) when location is explicitly mentioned
+- "any location", "anywhere" → location: "any"
+- Common Dubai areas: al Barsha, Marina, Dubai Marina, JBR, Downtown, Business Bay, Jumeirah, DIFC, etc.
+
+PROPERTY TYPE EXTRACTION (CRITICAL):
+- Extract ANY property type mentioned: "villa", "apartment", "flat", "townhouse", "penthouse", "studio", "commercial", "plot"
+- Patterns: "show me [type]", "[type] properties", "looking for [type]", "I want [type]"
+- "show me villas instead" → property_type: "villa"
+- "apartments in Marina" → property_type: "apartment"
+- "looking for townhouses" → property_type: "townhouse"
+- "I want a penthouse" → property_type: "penthouse"
+- "2BR apartment" → property_type: "apartment", bedrooms: 2
+- Set high confidence (0.9+) when property type is explicitly mentioned
+- Handle variations: "flat" = "apartment", "2BR" = bedrooms: 2
+
+TRANSACTION TYPE EXTRACTION (CRITICAL):
+- Extract ANY transaction mentioned: "buy", "purchase", "rent", "lease", "sale"
+- Patterns: "I want to [transaction]", "looking to [transaction]", "switch to [transaction]"
+- "I want to buy now" → transaction_type: "buy"
+- "looking to rent" → transaction_type: "rent"  
+- "switch to purchase" → transaction_type: "buy"
+- "for sale" → transaction_type: "buy"
+- "rental properties" → transaction_type: "rent"
+- Set high confidence (0.9+) when transaction type is explicitly mentioned
 
 FLEXIBLE REQUIREMENTS:
 - If user says "any budget" or "no budget limit" → leave budget fields null
 - If user says "any location" → set location: "any"
+- If user says "any property type" → leave property_type null
 - If user is flexible, set confidence to 0.8+ to indicate certainty about flexibility
 
 Rules:
@@ -469,6 +495,14 @@ Rules:
             )
             
             extracted_data = json.loads(response.choices[0].message.content)
+            logger.info(f"🔍 RAW_EXTRACTION: {extracted_data}")
+            
+            # Clean up any "null" strings that should be None (AI sometimes returns "null" as string)
+            for key, value in extracted_data.items():
+                if value == "null" or value == "None":
+                    extracted_data[key] = None
+            
+            logger.info(f"🔍 CLEANED_EXTRACTION: {extracted_data}")
             
             # Update current requirements with extracted data
             updated_requirements = current_requirements.copy()
@@ -476,6 +510,7 @@ Rules:
                 if value is not None:
                     setattr(updated_requirements, key, value)
             
+            logger.info(f"🔍 FINAL_REQUIREMENTS: {updated_requirements.dict()}")
             return updated_requirements
             
         except Exception as e:
@@ -504,6 +539,8 @@ Rules:
         current_info = []
         if requirements.transaction_type:
             current_info.append(f"looking to {requirements.transaction_type}")
+        if requirements.property_type:
+            current_info.append(f"{requirements.property_type}s")  # "villas", "apartments"  
         if requirements.location:
             current_info.append(f"in {requirements.location}")
         if requirements.budget_min:
@@ -813,14 +850,23 @@ Rules:
             properties_shown = session.context.get('properties_shown', 0)
             has_pagination_context = bool(all_available_properties and len(all_available_properties) > properties_shown)
             
+            # Get current user requirements for context
+            current_requirements = self._get_requirements_from_session(session)
+            
             context_info = f"""
 Current conversation context:
-- Stage: {current_stage}
+- Stage: {current_stage}  
 - Has active properties: {has_active_properties}
 - Has active property selected: {has_active_property_id}
 - Previous interactions: {"Yes" if has_active_properties else "No"}
 - PAGINATION CONTEXT: {len(all_available_properties)} total properties available, {properties_shown} already shown
 - Can show more properties: {has_pagination_context}
+
+CURRENT USER REQUIREMENTS:
+- Transaction Type: {current_requirements.transaction_type or "Not specified"}
+- Location: {current_requirements.location or "Not specified"} 
+- Property Type: {current_requirements.property_type or "Not specified"}
+- Budget: {f"{current_requirements.budget_min}-{current_requirements.budget_max}" if current_requirements.budget_min or current_requirements.budget_max else "Not specified"}
 """
 
             analysis_prompt = f"""
@@ -841,14 +887,47 @@ Analyze and return JSON with:
     "confidence": float  // 0-1 how confident you are
 }}
 
-RULES FOR ANALYSIS:
-1. If user says things like "show location", "nearest hospital", "where is this", "send map" → is_location_request = true, is_fresh_search = false
-2. If user wants new property search ("show me villas", "find apartments", "I want to buy") → is_fresh_search = true
-3. If asking about current property details → is_property_question = true, is_fresh_search = false
-4. If user is clearly continuing existing conversation → is_continuing_conversation = true, is_fresh_search = false
-5. **PAGINATION DETECTION**: If user says "show more", "more properties", "next batch", "see more" (even with typos like "shoe more") → is_continuing_conversation = true, is_fresh_search = false
-6. Use CONTEXT: if user has active properties and asks location questions, it's about those properties, NOT a fresh search
-7. **CRITICAL**: Pagination requests should NEVER be classified as fresh searches, even with typos!
+CRITICAL ANALYSIS RULES - COMPARE CURRENT vs NEW:
+
+1. **LOCATION CHANGE DETECTION**:
+   - CURRENT LOCATION: {current_requirements.location or "None"}
+   - If user mentions ANY different location → is_fresh_search = true
+   - Examples: "options in al Barsha", "what about JBR", "properties in Marina"
+   - If current is "Marina" and user says "al Barsha" → NEW SEARCH
+   - If current is "JBR" and user says "Downtown" → NEW SEARCH
+
+2. **BUDGET CHANGE DETECTION**:
+   - CURRENT BUDGET: {f"{current_requirements.budget_min or 'None'} - {current_requirements.budget_max or 'None'}" if current_requirements.budget_min or current_requirements.budget_max else "None"}
+   - If user mentions different budget → is_fresh_search = true
+   - Examples: "increase budget to 150k", "change budget", "under 80k", "1M budget"
+   - If current is "100k max" and user says "150k" → NEW SEARCH
+   - If current is "None" and user says "80k budget" → NEW SEARCH
+
+3. **PROPERTY TYPE CHANGE DETECTION**:
+   - CURRENT PROPERTY TYPE: {current_requirements.property_type or "None"}
+   - If user mentions different property type → is_fresh_search = true  
+   - Examples: "show me villas instead", "apartments", "townhouses", "studios"
+   - If current is "Apartment" and user says "villas" → NEW SEARCH
+   - If current is "Villa" and user says "apartments" → NEW SEARCH
+
+4. **TRANSACTION TYPE CHANGE DETECTION**:
+   - CURRENT TRANSACTION: {current_requirements.transaction_type or "None"}
+   - If user mentions different transaction → is_fresh_search = true
+   - Examples: "I want to buy now", "switch to rent", "looking to purchase"
+   - If current is "rent" and user says "buy" → NEW SEARCH
+   - If current is "buy" and user says "rent" → NEW SEARCH
+
+5. **PAGINATION DETECTION**:
+   - "show more", "more properties", "next batch" → is_pagination_request = true, is_fresh_search = false
+   - Handle typos: "shoe more", "more prop" → still pagination
+
+6. **PROPERTY DETAILS**:
+   - Asking about specific properties → is_property_question = true, is_fresh_search = false
+
+7. **LOCATION SERVICES**:
+   - "nearest hospital", "send map", "directions" → is_location_request = true, is_fresh_search = false
+
+**BE SMART**: Don't rely on keywords. Understand INTENT. If user is clearly asking about a different location than current context, it's a fresh search!
 
 Be intelligent - understand context and intent, don't rely on keywords! Handle typos gracefully.
 """

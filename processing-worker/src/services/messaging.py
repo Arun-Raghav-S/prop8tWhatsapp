@@ -156,7 +156,8 @@ async def mark_message_as_read(message_id: str, whatsapp_business_account: str =
             
         # Prepare API request data for mark-read (only messageId required)
         mark_read_data = {
-            "messageId": message_id
+            "messageId": message_id,
+            "showTypingIndicator": "true"
         }
         
         # Note: Only using mark-read endpoint, not messages endpoint
