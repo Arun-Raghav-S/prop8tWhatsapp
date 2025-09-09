@@ -30,6 +30,7 @@ from src.services.messaging import (
 )
 from src.services.agent_history import update_agent_history_async
 from src.services.name_collection import name_collection_service
+from src.services.ai_mode_service import check_ai_mode_enabled
 from src.utils.pubsub import (
     PubSubMessageProcessor,
     extract_whatsapp_messages,
@@ -485,6 +486,14 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
         logger.info(f"💬 USER_MESSAGE: {message_type} from {user_number}")
         logger.info(f"🆔 MESSAGE_ID: {message_id}")
         logger.info(f"⏰ TIMESTAMP: {message_timestamp}")
+        
+        # 🔒 PRIORITY CHECK 1: Check if AI mode is enabled for this business account
+        ai_mode_enabled = await check_ai_mode_enabled(whatsapp_business_account)
+        if not ai_mode_enabled:
+            logger.info(f"🚫 [AI_MODE_DISABLED] Skipping message processing for {whatsapp_business_account} - AI mode is disabled")
+            return  # Skip processing this message entirely
+        
+        logger.info(f"✅ [AI_MODE_ENABLED] AI mode is enabled for {whatsapp_business_account}, proceeding with message processing")
         
         # Check for duplicate/delayed messages from AiSensy
         if message_id:
