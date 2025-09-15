@@ -283,7 +283,7 @@ Return ONLY the clarification question, nothing else.
             missing_critical_info=self.critical_requirements,
             confidence_score=0.3,
             needs_clarification=True,
-            clarification_question="I'd be happy to help you find a property! Could you tell me if you're looking to buy or rent, which area you prefer, and your budget range?"
+            clarification_question="I'd be happy to help you find a property! Could you tell me if you're looking to buy or rent, which area you prefer, and what type of property?"
         )
     
     def is_ready_for_search(self, requirements: PropertyRequirements) -> bool:

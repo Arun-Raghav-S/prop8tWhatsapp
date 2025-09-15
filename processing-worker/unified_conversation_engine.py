@@ -145,6 +145,14 @@ class UnifiedConversationEngine:
                 # Don't clear context! We need the stored properties for pagination
                 return await self._handle_pagination_request(message, session, self._get_requirements_from_session(session))
             
+            # Handle general questions when there's an active property
+            has_active_property_id = bool(session.context.get('active_property_id'))
+            if (has_active_property_id and 
+                intent_analysis.get("intent_category") == "general" and 
+                not intent_analysis.get("is_property_question")):
+                logger.info("💬 GENERAL_QUESTION with active property - providing brief answer with property options")
+                return await self._handle_general_question_with_active_property(message, session)
+            
             if intent_analysis.get("is_fresh_search"):
                 logger.info("🔄 FRESH_SEARCH detected by AI - resetting conversation stage")
                 session.context['conversation_stage'] = ConversationStage.USER_INITIATED
@@ -566,7 +574,7 @@ Rules:
         # Smart question grouping strategy
         if len(missing) >= 3 and not any(current_info):
             # Initial conversation - ask core questions together
-            return "To find the perfect property for you, I need to know:\n\n1️⃣ Are you looking to *buy* or *rent*?\n2️⃣ Which area in Dubai? (Marina, Downtown, JBR, etc.)\n3️⃣ What's your budget range? (e.g., 80-100k for rent, 1-2M for purchase)"
+            return "To find the perfect property for you, I need to know:\n\n1️⃣ Are you looking to *buy* or *rent*?\n2️⃣ Which area in Dubai? (Marina, Downtown, JBR, etc.)\n3️⃣ What type of property? (apartment, villa, studio, etc.)"
         
         elif len(missing) >= 2 and "property_type" in missing:
             # Ask remaining questions together
@@ -876,6 +884,11 @@ You are analyzing user intent in a real estate conversation. Based on the contex
 
 User message: "{message}"
 
+IMPORTANT: If there's an active property selected, determine if the user's message is actually ABOUT that specific property or just a general question. Only set is_property_question=true if they're asking about details, features, or actions related to the specific selected property.
+
+Examples of property-specific questions: "How many bathrooms?", "Is parking included?", "Can I see photos?", "What floor is it on?"
+Examples of general questions: "Hello", "What's the weather?", "How are you?", "Tell me about Dubai", "What other properties do you have?"
+
 Analyze and return JSON with:
 {{
     "is_fresh_search": boolean,  // true if user wants to start a new property search
@@ -947,15 +960,134 @@ Be intelligent - understand context and intent, don't rely on keywords! Handle t
             
         except Exception as e:
             logger.error(f"❌ AI intent analysis failed: {e}")
-            # Safe fallback - assume continuing conversation if we have context
+            
+            # Smart fallback logic - don't assume everything is property-related just because there's an active property
+            message_lower = message.lower()
+            
+            # Property-specific keywords that indicate the user is asking about the active property
+            property_keywords = [
+                'bathroom', 'bedroom', 'kitchen', 'balcony', 'parking', 'pool', 'gym', 'garden',
+                'floor', 'sqft', 'square', 'size', 'area', 'furnish', 'view', 'direction',
+                'price', 'rent', 'sale', 'photo', 'image', 'visit', 'showing', 'available',
+                'feature', 'amenity', 'include', 'detail', 'spec', 'when built', 'age',
+                'maintenance', 'chiller', 'dewa', 'utilities'
+            ]
+            
+            # General greeting/conversation keywords
+            general_keywords = [
+                'hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening',
+                'how are you', 'thank you', 'thanks', 'weather', 'dubai', 'tell me about',
+                'what other', 'show me more', 'different', 'other options'
+            ]
+            
+            # Determine if this is likely a property question or general question
+            is_likely_property_question = has_active_property_id and any(keyword in message_lower for keyword in property_keywords)
+            is_likely_general_question = any(keyword in message_lower for keyword in general_keywords)
+            
+            # If it's clearly general, don't treat as property question even with active property
+            is_property_question = is_likely_property_question and not is_likely_general_question
+            
             return {
                 "is_fresh_search": not (has_active_properties or has_active_property_id),
-                "is_location_request": any(word in message.lower() for word in ['location', 'where', 'map', 'nearest', 'nearby']),
-                "is_property_question": has_active_property_id,
+                "is_location_request": any(word in message_lower for word in ['location', 'where', 'map', 'nearest', 'nearby']),
+                "is_property_question": is_property_question,
                 "is_continuing_conversation": has_active_properties or has_active_property_id,
-                "intent_category": "general",
+                "intent_category": "property_details" if is_property_question else "general",
                 "confidence": 0.6
             }
+    
+    async def _handle_general_question_with_active_property(self, message: str, session: ConversationSession) -> ConversationResponse:
+        """
+        Handle general questions when there's an active property selected
+        Provide brief answer and offer property options
+        """
+        try:
+            # Special handling for name questions
+            message_lower = message.lower()
+            if any(phrase in message_lower for phrase in ['what is my name', "what's my name", 'my name is', 'i am', "i'm"]):
+                # Get user name from session context
+                user_name = session.context.get('user_name')
+                
+                if 'what' in message_lower and 'name' in message_lower:
+                    # User asking for their name
+                    if user_name:
+                        brief_answer = f"Your name is {user_name}!"
+                    else:
+                        brief_answer = "I don't have your name on record yet. Feel free to tell me!"
+                elif 'my name is' in message_lower or 'i am' in message_lower or "i'm" in message_lower:
+                    # User telling us their name - extract it
+                    import re
+                    name_patterns = [
+                        r'my name is (\w+)', 
+                        r"i'?m (\w+)", 
+                        r'i am (\w+)'
+                    ]
+                    
+                    extracted_name = None
+                    for pattern in name_patterns:
+                        match = re.search(pattern, message_lower)
+                        if match:
+                            extracted_name = match.group(1).title()
+                            break
+                    
+                    if extracted_name:
+                        # Store the name in session
+                        session.context['user_name'] = extracted_name
+                        brief_answer = f"Nice to meet you, {extracted_name}!"
+                    else:
+                        brief_answer = "Thanks for introducing yourself!"
+                else:
+                    brief_answer = "Thanks for your message!"
+            else:
+                # Generate a brief answer to other general questions using AI
+                response_prompt = f"""
+You are a helpful real estate assistant. The user asked: "{message}"
+
+This appears to be a general question (not about a specific property). Provide a brief, helpful answer in 1-2 sentences. Keep it concise and friendly.
+
+Examples:
+- "Hello" → "Hi there! I'm here to help you with your property search."
+- "How are you?" → "I'm doing great, thanks for asking!"  
+- "Tell me about Dubai" → "Dubai is an amazing city with world-class amenities and diverse neighborhoods."
+- "What's the weather like?" → "Dubai generally has sunny, warm weather year-round."
+
+Give a brief, natural response:
+"""
+                
+                try:
+                    ai_response = await self.openai.chat.completions.create(
+                        model=self.model,
+                        messages=[{"role": "user", "content": response_prompt}],
+                        temperature=0.7,
+                        max_tokens=100
+                    )
+                    brief_answer = ai_response.choices[0].message.content.strip()
+                except:
+                    # Fallback for general responses
+                    brief_answer = "Thanks for your question!"
+            
+            # Add the follow-up question about property options
+            full_response = f"{brief_answer}\n\nWould you like to see more properties or learn more details about the current property?"
+            
+            # Return as a simple response (no search needed)
+            return ConversationResponse(
+                message=full_response,
+                stage=ConversationStage.FOLLOW_UP,
+                should_search_properties=False,
+                use_sophisticated_search=False,
+                requirements=self._get_requirements_from_session(session)
+            )
+            
+        except Exception as e:
+            logger.error(f"❌ Error handling general question: {e}")
+            # Safe fallback
+            return ConversationResponse(
+                message="Thanks for your question! Would you like to see more properties or learn more details about the current property?",
+                stage=ConversationStage.FOLLOW_UP,
+                should_search_properties=False,
+                use_sophisticated_search=False,
+                requirements=self._get_requirements_from_session(session)
+            )
     
     async def _generate_contextual_property_response(self, message: str, property_data: Dict[str, Any]) -> str:
         """
@@ -988,16 +1120,21 @@ Property Details:
 """
             
             response_prompt = f"""
-You are a helpful real estate agent. The user is asking about a specific property they're interested in.
+You are a helpful property assistant. Answer the user's question about this specific property directly and naturally.
 
 {property_context}
 
 User question: "{message}"
 
-Provide a helpful, detailed response about this specific property. If the user is asking about features, amenities, price, size, or any property details, use the information provided. If you don't have specific information, acknowledge that and offer to help them get more details or schedule a viewing.
+IMPORTANT RULES:
+- Answer directly and naturally like a helpful assistant
+- Do NOT use formal letter templates or signatures  
+- Do NOT include placeholders like "[Your Name]" or "[Contact Information]"
+- Keep responses conversational and friendly
+- If you don't have specific information, just say so and offer to help get more details
+- End with a helpful question or suggestion about next steps
 
-Keep response concise but informative, and always offer next steps like viewing scheduling or getting more information.
-"""
+Provide a helpful, natural response:"""
             
             response = await self.openai.chat.completions.create(
                 model=self.model,

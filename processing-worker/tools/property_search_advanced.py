@@ -194,16 +194,16 @@ class AdvancedPropertySearchAgent:
         ]
         is_greeting = any(greeting in query_lower for greeting in greeting_queries)
         
-        # STEP 1: Initial greeting - collect buy/rent, location, budget, property type
-        if is_greeting and not (has_buy_rent and has_location and has_budget and has_property_type):
+        # STEP 1: Initial greeting - collect buy/rent, location, property type (budget is optional)
+        if is_greeting and not (has_buy_rent and has_location and has_property_type):
             return {
                 'needs_clarification': True,
                 'clarification_type': 'initial_collection',
-                'message': "Hi there! 👋 I'll help you find the perfect property! \n\nTo get started, please tell me:\n\n🏠 Are you looking to *buy* or *rent*?\n📍 Which area/location are you interested in?\n💰 What's your budget range?\n🏡 Property type (villa, 2 beds, 3 beds etc. - don't say bhk, say beds)\n\nExample: 'I want to rent in Dubai Marina, budget 80-100k, 2 beds apartment'"
+                'message': "Hi there! 👋 I'll help you find the perfect property! \n\nTo get started, please tell me:\n\n🏠 Are you looking to *buy* or *rent*?\n📍 Which area/location are you interested in?\n🏡 Property type (apartment, villa, studio, etc.)\n\nExample: 'I want to rent an apartment in Dubai Marina'"
             }
         
-        # STEP 2: Check if we have enough initial info to search - REQUIRE ALL 4 PIECES
-        if has_buy_rent and has_location and has_budget and has_property_type:
+        # STEP 2: Check if we have enough initial info to search - REQUIRE CORE 3 PIECES (budget is optional)
+        if has_buy_rent and has_location and has_property_type:
             # We have all basic info - let the search proceed normally
             # The detailed clarification will happen if too many results are found
             return {'needs_clarification': False}

@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 
 # Load environment variables
 load_dotenv()
@@ -39,6 +40,9 @@ from src.utils.pubsub import (
 
 # Setup logging
 logger = setup_logger(__name__)
+
+# Initialize OpenAI client for AI intent classification
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Initialize FastAPI app for health checks
 app = FastAPI(
@@ -96,7 +100,7 @@ async def _handle_name_extraction_async(user_number: str, message: str, whatsapp
                 except Exception as e:
                     logger.error(f"❌ [NAME_EXTRACTION] Error re-processing query: {e}")
                     # Fallback to basic confirmation
-                    confirmation_message = f"Got it, {extracted_name}! I'll help you find apartments. To get started, please tell me:\n\n🏠 Are you looking to *buy* or *rent*?\n📍 Which area/location are you interested in?\n💰 What's your budget range?"
+                    confirmation_message = f"Got it, {extracted_name}! I'll help you find properties. To get started, please tell me:\n\n🏠 Are you looking to *buy* or *rent*?\n📍 Which area/location are you interested in?\n🏡 What type of property? (apartment, villa, studio, etc.)"
                     
                     await send_message_via_aisensy(
                         to_phone=user_number,
@@ -392,6 +396,69 @@ Please try again with:
         )
 
 
+async def _analyze_schedule_visit_intent(message: str) -> Dict[str, Any]:
+    """
+    AI-based intent analysis to detect schedule visit requests intelligently
+    Replaces primitive regex patterns with proper LLM understanding
+    """
+    try:
+        analysis_prompt = f"""
+You are analyzing a user message in a real estate conversation to detect if they want to schedule a property visit.
+
+User message: "{message}"
+
+Analyze the message and return JSON with:
+{{
+    "is_schedule_request": boolean,  // true if user wants to schedule/book a property visit
+    "confidence": float,  // 0-1 confidence score
+    "detected_phrases": [list of phrases that indicate scheduling intent],
+    "reason": "explanation of why this is or isn't a schedule request"
+}}
+
+SCHEDULE VISIT INDICATORS:
+- Direct requests: "schedule visit", "book visit", "arrange viewing", "schedule viewing"
+- Booking language: "book appointment", "set up visit", "plan visit"
+- Time-related: "when can I visit", "available times", "visit appointment"
+- Viewing language: "see property", "viewing", "tour", "show property"
+- Informal: "visit schedule", "wanna visit", "can visit"
+
+EXCLUDE these as false positives:
+- General inquiries: "tell me about visiting", "visiting process"
+- Past tense: "I visited", "have visited"  
+- Hypothetical: "if I visit", "before visiting"
+- Other context: "visiting family", "tourist visiting"
+
+Return only valid JSON.
+"""
+
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": analysis_prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=200
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        
+        # Log the AI analysis for debugging
+        if result.get("is_schedule_request"):
+            logger.info(f"🧠 AI detected schedule intent in: '{message}' (confidence: {result.get('confidence', 0):.2f})")
+            logger.info(f"🔍 Detected phrases: {result.get('detected_phrases', [])}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ AI intent analysis failed: {str(e)}")
+        # Fallback to conservative detection
+        return {
+            "is_schedule_request": False,
+            "confidence": 0.0,
+            "detected_phrases": [],
+            "reason": f"AI analysis failed: {str(e)}"
+        }
+
+
 async def _handle_schedule_visit_button(user_number: str, property_id: str, whatsapp_business_account: str, session) -> None:
     """Handle Schedule Visit button click - initiate visit scheduling flow"""
     try:
@@ -530,6 +597,32 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
                     if scheduling_state:
                         await _handle_scheduling_flow(user_number, text_message, whatsapp_business_account, session)
                         return  # Exit early, scheduling flow handled the response
+                    
+                    # 📅 CHECK FOR TEXT-BASED SCHEDULE VISIT: Use AI intent classification instead of regex
+                    schedule_intent = await _analyze_schedule_visit_intent(text_message)
+                    
+                    if schedule_intent['is_schedule_request']:
+                        # Check if user has an active property to schedule visit for
+                        active_property_id = session.context.get('active_property_id')
+                        if active_property_id:
+                            logger.info(f"🔄 TEXT_SCHEDULE_VISIT: Routing '{text_message}' to schedule visit flow for property {active_property_id}")
+                            await _handle_schedule_visit_button(user_number, active_property_id, whatsapp_business_account, session)
+                            return  # Exit early, scheduling flow handled the response
+                        else:
+                            # No active property, ask user to select one first
+                            active_properties = session.context.get('active_properties', [])
+                            if active_properties:
+                                response = "📅 I'd be happy to schedule a visit! Which property would you like to visit? Please click 'Know More' on a property first, then I can help you schedule a visit."
+                            else:
+                                response = "📅 I'd love to help you schedule a visit! Please search for properties first, then I can help you schedule a viewing for any property that interests you."
+                            
+                            await send_message_via_aisensy(
+                                to_phone=user_number,
+                                message=response,
+                                whatsapp_business_account=whatsapp_business_account
+                            )
+                            logger.info(f"📤 SCHEDULE_VISIT_NO_PROPERTY_RESPONSE_SENT: to {user_number}")
+                            return
                     
                     # 🏠 PRESERVE ACTIVE PROPERTY: Maintain context for follow-up questions
                     active_property_id = session.context.get('active_property_id')

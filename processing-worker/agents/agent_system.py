@@ -154,12 +154,8 @@ class WhatsAppAgentSystem:
                                         session.context['conversation_stage'] = ConversationStage.SHOWING_RESULTS
                                         session.context['properties_shown'] = 10
                                         
-                                        # Enhanced carousel response with pagination info
-                                        remaining = len(properties) - 10
-                                        if remaining > 0:
-                                            response = f"{intelligent_response}\n\n📱 I've sent you the first 10 properties as cards. There are {remaining} more properties available.\n\n💬 Say *\"show more properties\"* to see the next batch!"
-                                        else:
-                                            response = f"{intelligent_response}\n\n📱 I've sent you all {len(properties)} properties as cards."
+                                        # Use the intelligent response as-is (it's already properly formatted)
+                                        response = intelligent_response
                                         
                                         logger.info(f"🏠 SOPHISTICATED_PROPERTIES_FOUND: {len(properties)} total properties")
                                         return response

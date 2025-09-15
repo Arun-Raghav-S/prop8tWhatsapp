@@ -57,40 +57,28 @@ class VisitSchedulingTool:
             
             logger.info(f"📤 Sending visit scheduling request: {json.dumps(payload, indent=2)}")
             
-            # TEMPORARY: Mock successful scheduling for testing
-            # TODO: Fix the actual API endpoint or authentication
-            logger.info(f"🧪 [MOCK] Simulating successful visit scheduling for testing")
-            return {
-                'success': True,
-                'message': f"Visit scheduled successfully for {date_and_time}",
-                'response_data': {
-                    'booking_id': f'MOCK_{property_id[:8]}',
-                    'confirmation': 'Visit scheduled successfully'
-                }
-            }
+            # Make actual API call to visit user manager
+            response = requests.post(
+                self.api_url, 
+                headers=headers, 
+                json=payload, 
+                timeout=30
+            )
             
-            # Original API call (commented out for testing)
-            # response = requests.post(
-            #     self.api_url, 
-            #     headers=headers, 
-            #     json=payload, 
-            #     timeout=30
-            # )
-            # 
-            # if response.status_code == 200:
-            #     logger.info(f"✅ Visit scheduled successfully for {user_name}")
-            #     return {
-            #         'success': True,
-            #         'message': f"Visit scheduled successfully for {date_and_time}",
-            #         'response_data': response.json()
-            #     }
-            # else:
-            #     logger.error(f"❌ Visit scheduling failed: {response.status_code} - {response.text}")
-            #     return {
-            #         'success': False,
-            #         'message': f"Failed to schedule visit: {response.status_code}",
-            #         'error': response.text
-            #     }
+            if response.status_code == 200:
+                logger.info(f"✅ Visit scheduled successfully for {user_name}")
+                return {
+                    'success': True,
+                    'message': f"Visit scheduled successfully for {date_and_time}",
+                    'response_data': response.json()
+                }
+            else:
+                logger.error(f"❌ Visit scheduling failed: {response.status_code} - {response.text}")
+                return {
+                    'success': False,
+                    'message': f"Failed to schedule visit: {response.status_code}",
+                    'error': response.text
+                }
                 
         except Exception as e:
             logger.error(f"❌ Error scheduling visit: {str(e)}")
@@ -190,17 +178,16 @@ class VisitSchedulingTool:
 
 🏠 *Looking forward to showing you this amazing property!*"""
         else:
-            error_msg = error if error else "Unknown error occurred"
+            # Use user-friendly message instead of technical error details
             return f"""❌ *Unable to Schedule Visit*
 
-We're sorry, but there was an issue scheduling your visit:
-{error_msg}
+We're sorry, but we couldn't schedule your visit at this time.
 
-📞 *Alternative:*
-Please call us directly or try again with a different date/time.
+📞 *Please contact us directly:*
+Call us to schedule your property visit, and we'll arrange it for you right away.
 
 💬 *Need Help?*
-Let me know if you'd like to try a different date or need assistance."""
+Let me know if you'd like to try a different date or need assistance with anything else."""
 
 
 # Global instance

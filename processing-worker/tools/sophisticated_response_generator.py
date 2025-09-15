@@ -56,14 +56,16 @@ class SophisticatedResponseGenerator:
     
     def _generate_exact_match_response(self, search_result: SearchResult, criteria: SearchCriteria) -> str:
         """Generate response for exact matches"""
-        # Create header based on criteria
-        header = self._create_search_summary(criteria, exact_match=True)
-        header += f" ✅ Found {search_result.count} perfect matches!\n\n"
+        # Create simple, short response as requested
+        property_type = criteria.property_type or "properties"
+        location = criteria.location or "Dubai"
+        count = search_result.count
         
-        # Add interaction prompts (no property listings since carousel handles that)
-        footer = self._create_interaction_prompts(search_result.count)
+        response = f"Found {count} {property_type.lower()}{'s' if not property_type.endswith('s') else ''} in {location} ✅\n\n"
+        response += "Click *Know More* for details or book a viewing.\n\n"
+        response += 'Say *"show more properties"* to see the rest.'
         
-        return header + footer
+        return response
     
     def _generate_alternative_response(self, search_result: SearchResult, criteria: SearchCriteria) -> str:
         """Generate response for single-constraint alternatives"""
