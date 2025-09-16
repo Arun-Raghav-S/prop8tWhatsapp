@@ -8,6 +8,8 @@ import json
 import base64
 import asyncio
 import logging
+import requests
+import time
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -223,6 +225,67 @@ async def process_message(request: Request):
         logger.error(f"❌ PROCESSING_ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
+async def _call_single_image_carousel_api(property_id: str, whatsapp_business_account: str, user_number: str) -> None:
+    """Call the single_image_carousel API asynchronously without blocking the main response"""
+    try:
+        logger.info(f"🚀 CAROUSEL_API_START: Initiating single_image_carousel call")
+        logger.info(f"📸 CAROUSEL_API_PARAMS: property_id={property_id}, whatsapp_account={whatsapp_business_account}, user={user_number}")
+        
+        # Get the service role key
+        service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcyNTI5Mjc4NiwiZXhwIjoyMDQwODY4Nzg2fQ.CYPKYDqOuOtU7V9QhZ-U21C1fvuGZ-swUEm8beWc_X0")
+        logger.info(f"🔑 CAROUSEL_API_AUTH: Using service key (length: {len(service_key) if service_key else 0})")
+        
+        # Prepare the API payload
+        payload = {
+            "id": property_id,
+            "whatsapp_account_number": whatsapp_business_account,
+            "send_to": user_number,
+            "isProperty": True
+        }
+        logger.info(f"📦 CAROUSEL_API_PAYLOAD: {json.dumps(payload, indent=2)}")
+        
+        # Set up headers
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {service_key}'
+        }
+        logger.info(f"📋 CAROUSEL_API_HEADERS: Content-Type and Authorization set")
+        
+        # Make the API call
+        url = 'https://auth.propzing.com/functions/v1/single_image_carousel'
+        logger.info(f"🌐 CAROUSEL_API_REQUEST: Making POST request to {url}")
+        
+        start_time = time.time()
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        end_time = time.time()
+        
+        logger.info(f"⏱️ CAROUSEL_API_TIMING: Request took {end_time - start_time:.2f} seconds")
+        logger.info(f"📊 CAROUSEL_API_RESPONSE: Status {response.status_code}")
+        
+        if response.status_code == 200:
+            logger.info(f"✅ CAROUSEL_API_SUCCESS: Successfully sent carousel for property {property_id}")
+            try:
+                response_data = response.json()
+                logger.info(f"📄 CAROUSEL_API_RESPONSE_DATA: {json.dumps(response_data, indent=2)}")
+            except:
+                logger.info(f"📄 CAROUSEL_API_RESPONSE_TEXT: {response.text}")
+        else:
+            logger.warning(f"⚠️ CAROUSEL_API_ERROR: API returned status {response.status_code}")
+            logger.warning(f"❌ CAROUSEL_API_ERROR_BODY: {response.text}")
+            logger.warning(f"🔍 CAROUSEL_API_ERROR_HEADERS: {dict(response.headers)}")
+            
+    except requests.exceptions.Timeout as e:
+        logger.error(f"⏰ CAROUSEL_API_TIMEOUT: Request timed out after 10 seconds: {str(e)}")
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"🌐 CAROUSEL_API_CONNECTION_ERROR: Connection failed: {str(e)}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"🔥 CAROUSEL_API_REQUEST_ERROR: Request exception: {str(e)}")
+    except Exception as e:
+        # Log the error but don't raise it - we don't want this to affect the main response
+        logger.error(f"❌ CAROUSEL_API_UNKNOWN_ERROR: Unexpected error: {str(e)}")
+        import traceback
+        logger.error(f"📍 CAROUSEL_API_TRACEBACK: {traceback.format_exc()}")
+
 async def _handle_know_more_button(user_number: str, property_id: str, whatsapp_business_account: str, session) -> None:
     """Handle Know More button click - fetch and send detailed property information"""
     try:
@@ -260,6 +323,15 @@ I'm sorry, I couldn't find detailed information for this property right now.
         
         if success:
             logger.info(f"📤 KNOW_MORE_RESPONSE_SENT: to {user_number}")
+            
+            # Call single_image_carousel API asynchronously (doesn't block main response)
+            logger.info(f"🎯 KNOW_MORE_TRIGGER: About to trigger carousel API for property {property_id}")
+            asyncio.create_task(_call_single_image_carousel_api(
+                property_id=property_id,
+                whatsapp_business_account=whatsapp_business_account,
+                user_number=user_number
+            ))
+            logger.info(f"🚀 KNOW_MORE_TASK_CREATED: Carousel API task created and running in background")
             
             # Update agent history
             customer_name = session_manager.get_customer_name(user_number)
@@ -317,7 +389,7 @@ Please share your preferred:
             from tools.visit_scheduling_tool import visit_scheduling_tool
             
             customer_name = session.context.get('scheduling_customer_name')
-            formatted_datetime = visit_scheduling_tool.parse_date_time(text_message)
+            formatted_datetime = await visit_scheduling_tool.parse_date_time(text_message)
             
             if formatted_datetime:
                 # Schedule the visit
@@ -348,16 +420,24 @@ Please share your preferred:
                 session.context.pop('scheduling_property_id', None)
                 session.context.pop('scheduling_customer_name', None)
             else:
-                # Invalid date/time format
-                response = f"""🗓️ *I couldn't understand the date/time format.*
+                # Invalid or incomplete date/time format
+                response = f"""🗓️ *I need both a specific date and time for your visit.*
 
-Please try again with:
-• "Tomorrow at 2 PM"
-• "Dec 25 at 14:00"
-• "25/12/2023 2:00 PM"
+Please provide complete information like:
 
-💡 *What date and time works best for you?*"""
-                logger.warning(f"❌ INVALID_DATETIME: {text_message}")
+*Good Examples:*
+• "Tomorrow at 3 PM"
+• "Friday at 10:30 AM" 
+• "Next Monday at 2 PM"
+• "December 20th at 11 AM"
+
+*Not Enough Information:*
+• "Tomorrow" (missing time)
+• "3 PM" (missing date)
+• "Tomorrow morning" (time too vague)
+
+💡 *Please tell me the exact date and time that works for you.*"""
+                logger.warning(f"❌ INCOMPLETE_DATETIME: Could not parse both date and time from '{text_message}'")
         else:
             # Unknown state, clear it
             session.context.pop('scheduling_state', None)

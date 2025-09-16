@@ -8,18 +8,35 @@ import json
 import requests
 from typing import Dict, Any, Optional, List
 from utils.logger import setup_logger
+from openai import AsyncOpenAI
+
+# Import smart location assistant for enhanced functionality
+# Note: Import is done later to avoid circular imports
 
 logger = setup_logger(__name__)
 
 
 class LocationToolsHandler:
     """
-    Handler for location-based tools like finding nearest places and calculating routes
+    Advanced location-based tools using AI for intent detection and place finding
+    Handles finding nearest places and calculating routes using property coordinates
     """
     
     def __init__(self):
         self.api_base_url = "https://auth.propzing.com/functions/v1/whatsapp_agency_tools"
         self.auth_token = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MjUyOTI3ODYsImV4cCI6MjA0MDg2ODc4Nn0.11GJjOlgPf4RocdFjMnWGJpBqFVk1wmbW27OmV0YAzs"
+        self.openai_client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        
+        # Common place types for AI to recognize
+        self.place_types = [
+            'hospital', 'clinic', 'medical center', 'pharmacy', 'doctor',
+            'school', 'university', 'college', 'kindergarten', 'academy',
+            'mall', 'shopping center', 'supermarket', 'grocery', 'store',
+            'restaurant', 'cafe', 'food', 'dining', 'bakery',
+            'bank', 'atm', 'financial', 'metro', 'station', 'transport',
+            'airport', 'beach', 'park', 'garden', 'gym', 'fitness',
+            'hotel', 'accommodation', 'mosque', 'church', 'temple'
+        ]
     
     def extract_coordinates_from_address(self, address_data: Dict[str, Any]) -> Optional[tuple]:
         """
@@ -29,36 +46,47 @@ class LocationToolsHandler:
         """
         try:
             if not address_data:
+                logger.info(f"🗺️ No address data provided for coordinate extraction")
                 return None
                 
             # Handle if address is a string (JSON string)
             if isinstance(address_data, str):
+                logger.info(f"🗺️ Address data is string, attempting JSON parse")
                 try:
                     address_data = json.loads(address_data)
+                    logger.info(f"🗺️ Successfully parsed address JSON")
                 except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse address JSON: {address_data}")
+                    logger.warning(f"❌ Failed to parse address JSON: {address_data[:100]}...")
                     return None
+            
+            logger.info(f"🗺️ Address data keys: {list(address_data.keys()) if address_data else 'None'}")
             
             # Try new format first (latitude/longitude)
             latitude = address_data.get('latitude')
             longitude = address_data.get('longitude')
             
+            logger.info(f"🗺️ New format - latitude: {latitude}, longitude: {longitude}")
+            
             # If not found, try old format (lat/lng)
             if not (latitude and longitude):
                 latitude = address_data.get('lat')
                 longitude = address_data.get('lng')
+                logger.info(f"🗺️ Old format - lat: {latitude}, lng: {longitude}")
             
             if latitude and longitude:
                 try:
-                    return (float(latitude), float(longitude))
-                except (ValueError, TypeError):
-                    logger.warning(f"Invalid coordinate values: lat={latitude}, lng={longitude}")
+                    coords = (float(latitude), float(longitude))
+                    logger.info(f"✅ Successfully extracted coordinates: {coords}")
+                    return coords
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"❌ Invalid coordinate values: lat={latitude}, lng={longitude}, error={e}")
                     return None
+            else:
+                logger.warning(f"❌ No valid coordinates found in address data")
+                return None
                 
-            return None
-            
         except Exception as e:
-            logger.error(f"Error extracting coordinates from address: {str(e)}")
+            logger.error(f"❌ Error extracting coordinates from address: {str(e)}")
             return None
     
     def get_property_location_string(self, property_data: Dict[str, Any]) -> str:
@@ -136,9 +164,62 @@ class LocationToolsHandler:
                 "full_address": property_data.get('building_name', 'Unknown Location')
             }
     
-    async def find_nearest_place(self, property_data: Dict[str, Any], query: str, k: int = 3) -> Dict[str, Any]:
+    async def find_nearest_place_enhanced(self, property_data: Dict[str, Any], user_query: str, k: int = 3) -> Dict[str, Any]:
         """
-        Find nearest places to a property using its coordinates
+        Find nearest places using AI-enhanced place type detection and multiple search attempts
+        
+        Args:
+            property_data: Property data containing address with lat/lng
+            user_query: User's original query or extracted place type
+            k: Number of results to return (default 3)
+        
+        Returns:
+            Dict containing nearestPlaces array or error message
+        """
+        try:
+            # Use AI to extract and enhance the place type
+            place_analysis = await self.extract_place_type_with_ai(user_query)
+            primary_query = place_analysis.get('place_type', user_query)
+            search_terms = place_analysis.get('search_terms', [primary_query])
+            
+            logger.info(f"🧠 Enhanced search - Primary query: '{primary_query}', Search terms: {search_terms}")
+            
+            # Try each search term until we find results
+            for search_term in search_terms:
+                logger.info(f"🔍 Trying search term: '{search_term}'")
+                result = await self._find_nearest_place_basic(property_data, search_term, k)
+                
+                # If we got results, return them
+                if not result.get('error') and result.get('nearestPlaces') and len(result['nearestPlaces']) > 0:
+                    logger.info(f"✅ Found results with search term '{search_term}'")
+                    result['search_analysis'] = place_analysis
+                    result['successful_search_term'] = search_term
+                    return result
+                
+                logger.info(f"⚠️ No results for search term '{search_term}', trying next...")
+            
+            # If no search term worked, return the last result with enhanced error info
+            logger.warning(f"❌ No results found for any search terms: {search_terms}")
+            if 'result' in locals():
+                result['search_analysis'] = place_analysis
+                result['attempted_search_terms'] = search_terms
+                return result
+            else:
+                return {
+                    "error": f"Could not find any {primary_query} nearby",
+                    "property_name": property_data.get('building_name', 'Unknown Property'),
+                    "search_analysis": place_analysis,
+                    "attempted_search_terms": search_terms
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Error in enhanced place search: {str(e)}")
+            # Fallback to basic search
+            return await self._find_nearest_place_basic(property_data, user_query, k)
+    
+    async def _find_nearest_place_basic(self, property_data: Dict[str, Any], query: str, k: int = 3) -> Dict[str, Any]:
+        """
+        Basic nearest place finding (internal method)
         
         Args:
             property_data: Property data containing address with lat/lng
@@ -151,9 +232,13 @@ class LocationToolsHandler:
         try:
             # Extract coordinates from property address
             address_data = property_data.get('address', {})
+            logger.info(f"🗺️ Attempting to extract coordinates for property: {property_data.get('building_name', 'Unknown')}")
+            logger.info(f"🗺️ Address data type: {type(address_data)}, content preview: {str(address_data)[:200] if address_data else 'Empty'}")
+            
             coordinates = self.extract_coordinates_from_address(address_data)
             
             if not coordinates:
+                logger.warning(f"❌ Could not extract coordinates for property {property_data.get('building_name', 'Unknown')}")
                 # Fallback: provide property address information instead
                 property_name = property_data.get('building_name', 'Unknown Property')
                 address_info = self._get_fallback_address_info(address_data, property_data)
@@ -187,6 +272,8 @@ class LocationToolsHandler:
             
             logger.info(f"🔍 Finding nearest places for query: '{query}' near property: {property_data.get('building_name', 'Unknown')}")
             logger.info(f"📍 Using coordinates: {location_string}")
+            logger.info(f"🔧 API URL: {self.api_base_url}")
+            logger.info(f"🔧 Payload: {json.dumps(payload, indent=2)}")
             
             # Make API request
             response = requests.post(
@@ -196,8 +283,11 @@ class LocationToolsHandler:
                 timeout=10
             )
             
+            logger.info(f"🔄 API response status: {response.status_code}")
+            
             if response.status_code == 200:
                 result = response.json()
+                logger.info(f"🔄 API response body: {json.dumps(result, indent=2) if result else 'Empty'}")
                 
                 # Add property context to result
                 result['property_context'] = {
@@ -207,14 +297,27 @@ class LocationToolsHandler:
                     'query': query
                 }
                 
-                logger.info(f"✅ Found {len(result.get('nearestPlaces', []))} nearest places")
+                nearest_places_count = len(result.get('nearestPlaces', []))
+                logger.info(f"✅ Found {nearest_places_count} nearest places")
+                
+                if nearest_places_count == 0:
+                    logger.warning(f"⚠️ API returned 0 results for query '{query}' near coordinates {location_string}")
+                
                 return result
                 
             else:
-                logger.error(f"API request failed with status {response.status_code}: {response.text}")
+                logger.error(f"❌ API request failed with status {response.status_code}")
+                logger.error(f"❌ API response text: {response.text}")
+                logger.error(f"❌ API response headers: {response.headers}")
                 return {
                     "error": f"Failed to find nearest places (API error: {response.status_code})",
-                    "property_name": property_data.get('building_name', 'Unknown Property')
+                    "property_name": property_data.get('building_name', 'Unknown Property'),
+                    "api_error_details": {
+                        "status_code": response.status_code,
+                        "response_text": response.text,
+                        "url": self.api_base_url,
+                        "payload": payload
+                    }
                 }
                 
         except Exception as e:
@@ -223,6 +326,11 @@ class LocationToolsHandler:
                 "error": f"Error finding nearest places: {str(e)}",
                 "property_name": property_data.get('building_name', 'Unknown Property')
             }
+    
+    # Legacy method for backward compatibility
+    async def find_nearest_place(self, property_data: Dict[str, Any], query: str, k: int = 3) -> Dict[str, Any]:
+        """Legacy method - redirects to enhanced version"""
+        return await self.find_nearest_place_enhanced(property_data, query, k)
     
     async def calculate_route(self, property_data: Dict[str, Any], destination: str, is_origin: bool = True) -> Dict[str, Any]:
         """
@@ -428,12 +536,12 @@ class LocationToolsHandler:
 {location_text}
 
 🗺️ **What I can help you with:**
-• Send you the property location brochure with interactive map
+• Send you the property location map
 • Provide general area information about {city}
 • Help you with property details and viewing appointments
 
 💡 **For nearby amenities:**
-Ask me to "send location brochure" for an interactive map with nearby {query} and other places!"""
+Ask me to "share location" for an interactive map with nearby {query} and other places!"""
 
             # Add map link if available
             if map_location:
@@ -443,7 +551,85 @@ Ask me to "send location brochure" for an interactive map with nearby {query} an
             
         except Exception as e:
             logger.error(f"Error formatting fallback response: {str(e)}")
-            return f"❌ I encountered an issue providing location information for {result.get('property_name', 'the property')}. Please try asking for the location brochure instead."
+            return f"❌ I encountered an issue providing location information for {result.get('property_name', 'the property')}. Please try asking to share location instead."
+
+
+    async def extract_place_type_with_ai(self, message: str) -> Dict[str, Any]:
+        """
+        Use AI to extract the type of place user is looking for
+        
+        Args:
+            message: User's message asking about nearby places
+            
+        Returns:
+            Dict with place type and confidence
+        """
+        try:
+            prompt = f"""
+Analyze the user's message and extract what type of place they're looking for.
+
+User message: "{message}"
+
+Common place categories:
+- Medical: hospital, clinic, pharmacy, doctor
+- Education: school, university, college, academy  
+- Shopping: mall, supermarket, grocery, store
+- Food: restaurant, cafe, bakery, dining
+- Finance: bank, ATM
+- Transport: metro, station, airport
+- Recreation: beach, park, gym
+- Accommodation: hotel
+- Religious: mosque, church, temple
+
+Respond in JSON format:
+{{
+    "place_type": "specific place type (singular)",
+    "category": "general category",
+    "confidence": 0.0-1.0,
+    "search_terms": ["term1", "term2"] // alternative terms to search
+}}
+
+Examples:
+- "nearby schools" -> {{"place_type": "school", "category": "education", "confidence": 0.9, "search_terms": ["school", "academy"]}}
+- "closest hospital" -> {{"place_type": "hospital", "category": "medical", "confidence": 0.9, "search_terms": ["hospital", "clinic"]}}
+"""
+            
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an expert at extracting place types from user queries. Always respond with valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=200
+            )
+            
+            result_str = response.choices[0].message.content.strip()
+            result = json.loads(result_str)
+            
+            logger.info(f"🧠 AI Place Type Analysis: {result}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Error in AI place type extraction: {str(e)}")
+            # Fallback to simple keyword matching
+            message_lower = message.lower()
+            
+            for place_type in self.place_types:
+                if place_type in message_lower:
+                    return {
+                        "place_type": place_type,
+                        "category": "general",
+                        "confidence": 0.7,
+                        "search_terms": [place_type]
+                    }
+            
+            return {
+                "place_type": "place",
+                "category": "general", 
+                "confidence": 0.5,
+                "search_terms": ["place"]
+            }
 
 
 # Create global instance for easy import

@@ -772,31 +772,20 @@ Rules:
                 if intent_analysis.get("is_location_request"):
                     logger.info(f"🗺️ AI detected location request for active property: {active_property_id}")
                     
-                    # Use property location service intelligently
-                    from tools.property_location_service import property_location_service
-                    
-                    # Let the location service determine if it's nearest places or general location
-                    location_intent = property_location_service.detect_location_intent(message)
+                    # Use Smart Location Assistant for comprehensive location handling
+                    from tools.smart_location_assistant import smart_location_assistant
                     
                     # Extract user phone from session
                     user_phone = session.user_id.replace('+', '')  # Remove + if present
                     whatsapp_account = session.context.get('whatsapp_business_account', '543107385407043')
                     
-                    if location_intent.get("intent") == "find_nearest" and location_intent.get("query"):
-                        # Handle nearest places request
-                        return await property_location_service.find_nearest_places(
-                            property_id=active_property_id,
-                            query=location_intent["query"],
-                            user_phone=user_phone
-                        )
-                    else:
-                        # Handle general location request
-                        return await property_location_service.handle_location_request(
-                            property_id=active_property_id,
-                            user_phone=user_phone,
-                            whatsapp_account=whatsapp_account,
-                            message=message
-                        )
+                    # Let Smart Location Assistant handle all location requests with AI routing
+                    return await smart_location_assistant.handle_location_request(
+                        property_id=active_property_id,
+                        user_phone=user_phone,
+                        whatsapp_account=whatsapp_account,
+                        user_message=message
+                    )
                 
                 # For NON-location queries about the active property, use AI with property context
                 return await self._generate_contextual_property_response(message, active_property_data)
@@ -938,7 +927,7 @@ CRITICAL ANALYSIS RULES - COMPARE CURRENT vs NEW:
    - Asking about specific properties → is_property_question = true, is_fresh_search = false
 
 7. **LOCATION SERVICES**:
-   - "nearest hospital", "send map", "directions" → is_location_request = true, is_fresh_search = false
+   - "nearest hospital", "send map", "directions", "share location", "send brochure", "brochure" → is_location_request = true, is_fresh_search = false
 
 **BE SMART**: Don't rely on keywords. Understand INTENT. If user is clearly asking about a different location than current context, it's a fresh search!
 

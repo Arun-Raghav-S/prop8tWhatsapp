@@ -80,9 +80,9 @@ class SophisticatedResponseGenerator:
         explanation = self._explain_alternatives(alternatives, criteria, strategy)
         
         # Show properties
-        properties_text = "\n🏠 **Here are the best options:**\n\n"
-        for i, prop in enumerate(search_result.properties[:5], 1):
-            properties_text += self._format_property_item(prop, i)
+        # properties_text = "\n🏠 **Here are the best options:**\n\n"
+        # for i, prop in enumerate(search_result.properties[:5], 1):
+        #     properties_text += self._format_property_item(prop, i)
         
         # Add specific suggestions
         suggestions_text = "\n💡 **Other options you might consider:**\n"
@@ -91,7 +91,7 @@ class SophisticatedResponseGenerator:
         
         footer = "\n👉 Click 'Know More' on any property card for details\n📞 Book viewing for any property\n🔍 Adjust my search criteria"
         
-        return header + explanation + properties_text + suggestions_text + footer
+        return header + explanation  + suggestions_text + footer
     
     def _generate_multi_constraint_response(self, search_result: SearchResult, criteria: SearchCriteria) -> str:
         """Generate response for multi-constraint relaxation"""
