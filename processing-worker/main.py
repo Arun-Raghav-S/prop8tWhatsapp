@@ -29,9 +29,12 @@ from src.config import config
 from src.services.messaging import (
     send_message_via_aisensy,
     mark_message_as_read,
-    is_duplicate_message
+    is_duplicate_message,
+    trigger_log_ai_reply,
+    trigger_status_update
 )
-from src.services.agent_history import update_agent_history_async
+from src.services.agent_history import update_agent_history_async, agent_history_service
+from src.services.area_expert_service import trigger_area_expert_if_ready
 from src.services.name_collection import name_collection_service
 from src.services.ai_mode_service import check_ai_mode_enabled
 from src.utils.pubsub import (
@@ -59,6 +62,68 @@ session_manager = SessionManager()
 
 # Global pub/sub processor
 pubsub_processor = None
+
+async def _handle_post_response_updates(
+    text_message: str,
+    agent_response: str,
+    user_number: str,
+    whatsapp_business_account: str,
+    org_id: str,
+    user_name: Optional[str],
+    session
+):
+    """
+    Handle post-response updates including agent history and area expert trigger
+    Runs in background without blocking main conversation flow
+    """
+    try:
+        # Update agent history and get IDs back
+        lead_id, whatsapp_interaction_id = await agent_history_service.update_agent_history(
+            user_message=text_message,
+            agent_response=agent_response,
+            user_number=user_number,
+            whatsapp_business_account=whatsapp_business_account,
+            org_id=org_id,
+            user_name=user_name
+        )
+        
+        # Extract user requirements from session - check multiple possible locations
+        # Try 'user_requirements' first (unified conversation engine)
+        requirements = session.context.get('user_requirements', {})
+        
+        # Fallback to 'ai_requirements' (agent system)
+        if not requirements:
+            requirements = session.context.get('ai_requirements', {})
+        
+        # Fallback to 'requirements' (legacy/test)
+        if not requirements:
+            requirements = session.context.get('requirements', {})
+        
+        # Get area and transaction type
+        area = requirements.get('location')
+        transaction_type = requirements.get('transaction_type')
+        
+        logger.info(f"🔍 [AREA_EXPERT_CHECK] Requirements found: {requirements}")
+        logger.info(f"🔍 [AREA_EXPERT_CHECK] Area: {area}, Transaction: {transaction_type}")
+        
+        # Trigger area expert if we have the required data
+        if area and transaction_type:
+            logger.info(f"🎯 [AREA_EXPERT_TRIGGER] Ready! Area: {area}, Type: {transaction_type}")
+            await trigger_area_expert_if_ready(
+                area=area,
+                rent_buy=transaction_type,
+                org_id=org_id,
+                whatsapp_business_account=whatsapp_business_account,
+                lead_id=lead_id,
+                whatsapp_interaction_id=whatsapp_interaction_id
+            )
+        else:
+            logger.info(f"🔍 [AREA_EXPERT_TRIGGER] Not ready yet - area: {area}, transaction_type: {transaction_type}")
+            
+    except Exception as e:
+        # Don't let errors in background tasks break anything
+        logger.error(f"⚠️ [POST_RESPONSE_UPDATES] Error in background updates: {e}")
+
 
 async def _handle_name_extraction_async(user_number: str, message: str, whatsapp_business_account: str):
     """Handle name extraction in background without blocking conversation"""
@@ -210,11 +275,21 @@ async def process_message(request: Request):
                     # Check if this is a message event
                     if change.get("field") == "messages":
                         value = change.get("value", {})
-                        messages = value.get("messages", [])
                         
-                        logger.info(f"🔄 PROCESSING: {len(messages)} messages from {whatsapp_business_account}")
-                        for message in messages:
-                            await process_single_message(message, whatsapp_business_account)
+                        # 🆕 Check for status updates (sent/delivered/read)
+                        if "statuses" in value:
+                            statuses = value.get("statuses", [])
+                            if statuses:
+                                logger.info(f"📊 [STATUS_WEBHOOK] Received {len(statuses)} status updates")
+                                # Process status updates in background (non-blocking)
+                                trigger_status_update(statuses, whatsapp_business_account)
+                        
+                        # Process regular messages
+                        messages = value.get("messages", [])
+                        if messages:
+                            logger.info(f"🔄 PROCESSING: {len(messages)} messages from {whatsapp_business_account}")
+                            for message in messages:
+                                await process_single_message(message, whatsapp_business_account)
                             
         return {"success": True}
         
@@ -765,16 +840,31 @@ async def process_single_message(message: Dict[str, Any], whatsapp_business_acco
                     if success:
                         logger.info(f"📤 RESPONSE_SENT: to {user_number}")
                         
-                        # Update agent history in background (non-blocking)
+                        # Get user context
                         customer_name = session_manager.get_customer_name(user_number)
                         org_id = session_manager.get_org_id(user_number)
-                        asyncio.create_task(update_agent_history_async(
-                            user_message=text_message,
+                        
+                        # Get lead_id and interaction_id from agent history service
+                        lead_id, whatsapp_interaction_id = agent_history_service.get_latest_ids(user_number)
+                        
+                        # Log AI reply in background (non-blocking)
+                        trigger_log_ai_reply(
+                            org_id=org_id or "unknown",
+                            lead_id=lead_id,
+                            whatsapp_agent_id=whatsapp_business_account,
+                            to_phone=user_number,
+                            whatsapp_interaction_id=whatsapp_interaction_id
+                        )
+                        
+                        # Launch agent history update and area expert trigger concurrently
+                        asyncio.create_task(_handle_post_response_updates(
+                            text_message=text_message,
                             agent_response=agent_response,
                             user_number=user_number,
                             whatsapp_business_account=whatsapp_business_account,
                             org_id=org_id,
-                            user_name=customer_name
+                            user_name=customer_name,
+                            session=session
                         ))
                         logger.info("📊 AGENT_HISTORY: Queued for API sync")
                     else:

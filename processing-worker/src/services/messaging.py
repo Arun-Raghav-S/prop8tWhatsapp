@@ -388,3 +388,278 @@ async def send_document_via_aisensy(to_phone: str, document_url: str, filename: 
     except Exception as e:
         logger.error(f"Error sending document via AiSensy: {e}")
         return False
+
+
+async def log_ai_reply_async(
+    org_id: str,
+    lead_id: Optional[str],
+    whatsapp_agent_id: str,
+    to_phone: str,
+    whatsapp_interaction_id: Optional[str]
+) -> None:
+    """
+    Log AI reply to the edge function - completely non-blocking
+    This tracks all AI agent replies sent to users
+    
+    Args:
+        org_id: Organization ID
+        lead_id: Lead ID from agent history (can be None)
+        whatsapp_agent_id: WhatsApp business account ID
+        to_phone: User's phone number
+        whatsapp_interaction_id: Interaction ID from agent history (can be None)
+    """
+    try:
+        logger.info(f"📊 [LOG_MESSAGE] Logging AI reply for {to_phone}")
+        
+        # Prepare payload with fixed category and template_name
+        payload = {
+            "org_id": org_id,
+            "lead_id": lead_id or "pending",
+            "whatsapp_agent_id": whatsapp_agent_id,
+            "category": "AI_REPLY",
+            "template_name": "ai_response_template",
+            "to_phone": to_phone,
+            "whatsapp_interaction_id": whatsapp_interaction_id or "pending"
+        }
+        
+        logger.info(f"📊 [LOG_MESSAGE] Payload: {json.dumps(payload, indent=2)}")
+        
+        # Use the Supabase URL from environment
+        log_url = f"{SUPABASE_URL}/functions/v1/log-message"
+        
+        headers = {
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        # Make async call with timeout
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(log_url, json=payload, headers=headers)
+            
+            if response.status_code == 200:
+                logger.info(f"✅ [LOG_MESSAGE] Successfully logged AI reply for {to_phone}")
+            else:
+                logger.warning(f"⚠️ [LOG_MESSAGE] Failed to log: {response.status_code} - {response.text}")
+                
+    except asyncio.TimeoutError:
+        logger.warning(f"⏱️ [LOG_MESSAGE] Timeout logging AI reply (non-critical)")
+    except Exception as e:
+        # Don't let logging errors break the main flow
+        logger.warning(f"⚠️ [LOG_MESSAGE] Error logging AI reply (non-critical): {e}")
+
+
+def trigger_log_ai_reply(
+    org_id: str,
+    lead_id: Optional[str],
+    whatsapp_agent_id: str,
+    to_phone: str,
+    whatsapp_interaction_id: Optional[str]
+) -> None:
+    """
+    Trigger AI reply logging in background - completely non-blocking
+    
+    Args:
+        org_id: Organization ID
+        lead_id: Lead ID from agent history (can be None)
+        whatsapp_agent_id: WhatsApp business account ID
+        to_phone: User's phone number
+        whatsapp_interaction_id: Interaction ID from agent history (can be None)
+    """
+    # Launch in background without waiting
+    asyncio.create_task(log_ai_reply_async(
+        org_id=org_id,
+        lead_id=lead_id,
+        whatsapp_agent_id=whatsapp_agent_id,
+        to_phone=to_phone,
+        whatsapp_interaction_id=whatsapp_interaction_id
+    ))
+    
+    logger.info(f"🚀 [LOG_MESSAGE] Launched background task to log AI reply for {to_phone}")
+
+
+# ============================================================================
+# MESSAGE STATUS TRACKING (sent/delivered/read)
+# ============================================================================
+
+async def update_message_status(
+    message_id: str, 
+    status: str, 
+    timestamp: str, 
+    recipient_phone: str = None,
+    whatsapp_business_account: str = None
+) -> bool:
+    """
+    Update message status in the message_logs table (NON-BLOCKING)
+    
+    Args:
+        message_id: The WhatsApp message ID (stored as bsp_msg_id)
+        status: Status type (sent, delivered, read)
+        timestamp: Unix timestamp from webhook
+        recipient_phone: Phone number of recipient (optional)
+        whatsapp_business_account: Business account ID (optional)
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        status_logger = logging.getLogger('message_status')
+        
+        # Convert Unix timestamp to ISO format
+        try:
+            unix_timestamp = float(timestamp)
+            iso_timestamp = datetime.fromtimestamp(unix_timestamp).isoformat() + "Z"
+            status_logger.info(f"📅 [STATUS] Converted timestamp: {timestamp} -> {iso_timestamp}")
+        except (ValueError, TypeError) as e:
+            status_logger.error(f"❌ [STATUS] Invalid timestamp: {timestamp}, error: {e}")
+            iso_timestamp = datetime.now().isoformat() + "Z"
+        
+        status_logger.info(f"📊 [STATUS] Processing status update for message: {message_id[:30]}...")
+        status_logger.info(f"📊 [STATUS] Status: {status}")
+        status_logger.info(f"📊 [STATUS] Timestamp: {iso_timestamp}")
+        
+        if not config.SUPABASE_SERVICE_ROLE_KEY:
+            status_logger.error(f"❌ [STATUS] Missing SUPABASE_SERVICE_ROLE_KEY")
+            return False
+        
+        # Database URL and headers (updated to use message_logs table)
+        search_url = f"{config.SUPABASE_URL}/rest/v1/message_logs"
+        headers = {
+            "apikey": config.SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {config.SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        # Search for existing record using bsp_msg_id (new column name)
+        search_params = {"bsp_msg_id": f"eq.{message_id}", "select": "id,whatsapp_status"}
+        status_logger.info(f"🔍 [STATUS] Searching for existing record with bsp_msg_id: {message_id}")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            search_response = await client.get(search_url, headers=headers, params=search_params)
+            
+            if search_response.status_code == 200:
+                existing_records = search_response.json()
+                status_logger.info(f"🔍 [STATUS] Found {len(existing_records)} existing records")
+                
+                if existing_records:
+                    # Update existing record
+                    record = existing_records[0]
+                    existing_whatsapp_status = record.get("whatsapp_status", {})
+                    status_logger.info(f"📋 [STATUS] Existing whatsapp_status: {existing_whatsapp_status}")
+                    
+                    # Parse existing whatsapp_status JSON or create new one
+                    if isinstance(existing_whatsapp_status, dict):
+                        updated_status = existing_whatsapp_status.copy()
+                    else:
+                        try:
+                            updated_status = json.loads(existing_whatsapp_status) if existing_whatsapp_status else {}
+                        except (json.JSONDecodeError, TypeError):
+                            updated_status = {}
+                    
+                    # Add the new status with timestamp
+                    updated_status[status] = iso_timestamp
+                    
+                    # Handle out-of-order delivery: if read comes before delivered
+                    if status == "read" and "delivered" not in updated_status and "sent" in updated_status:
+                        status_logger.info(f"⚠️ [STATUS] Read received before delivered - using same timestamp")
+                        updated_status["delivered"] = iso_timestamp
+                    
+                    status_logger.info(f"🔄 [STATUS] Updated whatsapp_status JSON: {updated_status}")
+                    
+                    # Update the record using whatsapp_status column
+                    update_url = f"{search_url}?id=eq.{record['id']}"
+                    update_data = {"whatsapp_status": updated_status}
+                    
+                    update_response = await client.patch(update_url, headers=headers, json=update_data)
+                    
+                    if update_response.status_code in [200, 204]:
+                        status_logger.info(f"✅ [STATUS] Successfully updated whatsapp_status")
+                        return True
+                    else:
+                        status_logger.error(f"❌ [STATUS] Failed to update: {update_response.status_code}")
+                        return False
+                else:
+                    # No existing record found - this is expected since message_logs entries 
+                    # are created when messages are sent, not when status updates arrive
+                    status_logger.info(f"📝 [STATUS] No existing record found for bsp_msg_id: {message_id}")
+                    status_logger.info(f"ℹ️ [STATUS] This is normal - message_logs entries are created when sending messages")
+                    return True  # Return True to not block the flow
+            else:
+                status_logger.error(f"❌ [STATUS] Search failed: {search_response.status_code}")
+                return False
+                
+    except asyncio.TimeoutError:
+        logger.warning(f"⏱️ [STATUS] Timeout updating status (non-critical)")
+        return False
+    except Exception as e:
+        logger.warning(f"⚠️ [STATUS] Error updating message status (non-critical): {e}")
+        return False
+
+
+async def process_status_updates(
+    statuses: List[Dict[str, Any]], 
+    whatsapp_business_account: str = None
+) -> bool:
+    """
+    Process multiple status updates from a webhook (NON-BLOCKING)
+    
+    Args:
+        statuses: List of status objects from webhook
+        whatsapp_business_account: Business account ID (optional)
+        
+    Returns:
+        bool: True if all updates successful, False otherwise
+    """
+    status_logger = logging.getLogger('message_status')
+    status_logger.info(f"📊 [STATUS_BATCH] Processing {len(statuses)} status updates")
+    
+    success_count = 0
+    
+    for status_obj in statuses:
+        try:
+            message_id = status_obj.get("id")
+            status = status_obj.get("status")
+            timestamp = status_obj.get("timestamp")
+            recipient_id = status_obj.get("recipient_id")
+            
+            if not all([message_id, status, timestamp]):
+                status_logger.warning(f"⚠️ [STATUS_BATCH] Missing required fields: {status_obj}")
+                continue
+            
+            status_logger.info(f"📊 [STATUS_BATCH] Processing: {message_id[:30]}... -> {status}")
+            
+            # Convert recipient_id to phone format if available
+            recipient_phone = f"+{recipient_id}" if recipient_id else None
+            
+            # Update individual status
+            success = await update_message_status(
+                message_id, 
+                status, 
+                timestamp, 
+                recipient_phone, 
+                whatsapp_business_account
+            )
+            
+            if success:
+                success_count += 1
+                status_logger.info(f"✅ [STATUS_BATCH] Successfully processed")
+            else:
+                status_logger.error(f"❌ [STATUS_BATCH] Failed to process")
+                
+        except Exception as e:
+            status_logger.error(f"❌ [STATUS_BATCH] Error: {e}")
+    
+    status_logger.info(f"📊 [STATUS_BATCH] Completed: {success_count}/{len(statuses)} successful")
+    return success_count == len(statuses)
+
+
+def trigger_status_update(statuses: List[Dict[str, Any]], whatsapp_business_account: str = None) -> None:
+    """
+    Trigger status update in background - completely non-blocking
+    
+    Args:
+        statuses: List of status objects from webhook
+        whatsapp_business_account: Business account ID (optional)
+    """
+    # Launch in background without waiting
+    asyncio.create_task(process_status_updates(statuses, whatsapp_business_account))
+    logger.info(f"🚀 [STATUS] Launched background task to update {len(statuses)} message statuses")
